@@ -1,0 +1,21 @@
+# Build
+build/
+*.o
+*.a
+
+# Dependencies
+node_modules/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Env
+.env
+.env.local
+
+# Logs
+*.log
+npm-debug.log*
