@@ -216,34 +216,6 @@ void handle_targeted_monte_carlo(const httplib::Request& req, httplib::Response&
 }
 
 
-/// @brief POST "/api/two-impulse"
-void handle_two_impulse(const httplib::Request& req, httplib::Response& res) {
-    try {
-        json body = json::parse(req.body);
-
-        Vec6 x0 = json_to_vec6(body["initialState"]);
-        Vec3 rf = json_to_vec3(body["targetPosition"]);
-        double tof = body["timeOfFlight"].get<double>();
-        double altitude = body.value("altitude", 420e3);
-        int num_points = body.value("numPoints", 100);
-
-        OrbitalParams orbit(altitude);
-        auto result = compute_transfer_trajectory(x0, rf, tof, orbit.mean_motion(), num_points);
-
-        json response {
-            {"trajectory", stateHistory_to_json(result.trajectory)},
-            {"dv1", vec3_to_json(result.maneuvers.dv1)},
-            {"dv2", vec3_to_json(result.maneuvers.dv2)},
-            {"totalDV", result.maneuvers.total_dv}
-        };
-        res.set_content(response.dump(), "application/json");
-    } catch (const std::exception& e) {
-        res.status = 400;
-        res.set_content(json({{"error", e.what()}}).dump(), "application/json");
-    }
-}
-
-
 /// @brief POST "/api/lqr-approach"
 void handle_lqr_approach(const httplib::Request& req, httplib::Response& res) {
     try {

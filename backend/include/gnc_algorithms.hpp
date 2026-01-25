@@ -3,7 +3,7 @@
  * @brief GNC Algorithms for Proximity Operations - Declarations
  * 
  * Implements guidance and control algorithms:
- * - Two-impulse targeting (CW Lambert problem)
+
  * - Glideslope guidance
  * - LQR optimal control
  * 
@@ -17,47 +17,6 @@
 
 namespace relnav{
 
-// ----------------------------------------------------------------------------
-// Two-Impulse Targeting
-// ----------------------------------------------------------------------------
-
-/**
- * @brief Result of two-impulse targeting computation
- */
-struct TwoImpulseResult {
-    Vec3 dv1;           // First delta-v at departure [m/s]
-    Vec3 dv2;           // Second delta-v at arrival [m/s]
-    double total_dv;     // Total delta-v magnitude [m/s]
-};
-
-/**
- * @brief Full transfer trajectory with maneuvers
- */
-struct TransferTrajectory {
-    StateHistory trajectory;
-    TwoImpulseResult maneuvers;
-};
-
-/**
- * @brief Compute two-impulse transfer in CW frame
- * 
- * Solves the CW analog of Lambert's problem.
- * 
- * @param r0 Initial position [m]
- * @param v0 Initial velocity [m/s]
- * @param rf Target position [m]
- * @param tof Time of flight [s]
- * @param n Mean motion [rad/s]
- * @return Delta-v pair and total
- */
-TwoImpulseResult two_impulse_targeting(
-    const Vec3& r0,
-    const Vec3& v0,
-    const Vec3& rf,
-    double tof,
-    double n
-);
-
 /**
  * @brief Compute full transfer trajectory
  * @param x0 Initial state
@@ -67,7 +26,7 @@ TwoImpulseResult two_impulse_targeting(
  * @param num_points Number of trajectory points
  * @return Transfer trajectory with maneuvers
  */
-TransferTrajectory compute_transfer_trajectory(
+StateHistory compute_transfer_trajectory(
     const Vec6& x0,
     const Vec3& rf,
     double tof,
@@ -95,10 +54,11 @@ struct GlideslopeParams {
  * @brief Result of glideslope constraint check
  */
 struct GlideslopeCheck {
-    bool violated;      // true if constraint violated
-    double margin;      // Positive = safe, negative = violation
-    double v_approach;  // Actual approach velocity [m/s]
-    double v_max;       // Maximum allowed velocity [m/s]
+    bool violated;          // true if constraint violated
+    double margin;          // Positive = safe, negative = violation
+    double v_approach;      // Actual approach velocity [m/s]
+    double v_max;           // Maximum allowed velocity [m/s]
+    double approach_angle;  // Angle of approach [rad]
 };
 
 /**
@@ -108,6 +68,14 @@ struct GlideslopeCheck {
  * @return Maximum approach speed [m/s]
  */
 double glideslope_velocity_limit(const Vec3& position, const GlideslopeParams& params);
+
+/**
+ * @brief Compute approach angle based on position relative to target
+ * @param position Current position in LVLH [m]
+ * @param params Glideslope parameters
+ * @return Angle of approach [rad]
+ */
+double glideslope_approach_angle(const Vec3& position, const Vec3& axis);
 
 /**
  * @brief Check if glideslope constraint is violated
@@ -123,7 +91,16 @@ GlideslopeCheck check_glideslope_violation(const Vec6& x, const GlideslopeParams
  * @param params Glideslope parameters
  * @return Delta-v command to satisfy constraint [m/s]
  */
-Vec3 glideslope_guidance(const Vec6& x, const GlideslopeParams& params);
+Vec3 glideslope_velocity_guidance(const Vec6& x, const GlideslopeParams& params);
+
+/**
+ * @brief Computes waypoints according to position relative to approach corridor
+ * @param x Current position state
+ * @param params Glideslope parameters
+ * @return Waypoint position [m]
+ */
+Vec3 glideslope_waypoint_guidance(const Vec3& x, const GlideslopeParams& params);
+
 
 // ----------------------------------------------------------------------------
 // LQR Optimal Control

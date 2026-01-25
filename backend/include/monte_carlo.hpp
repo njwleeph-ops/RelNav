@@ -81,7 +81,6 @@ struct MonteCarloResult {
  */
 struct TargetedMonteCarloResult {
     Vec3 target;                            // Target's location
-    TwoImpulseResult nominal_maneuver;      
     std::vector<Vec6> final_states;         // Final state of each samples
     std::vector<bool> inside_corridor;      // Whether each sample hit corridor
     Vec3 mean_arrival;                      

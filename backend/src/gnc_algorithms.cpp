@@ -10,68 +10,26 @@
 
 namespace relnav {
 
-// ----------------------------------------------------------------------------
-// Two-Impulse Targeting
-// ----------------------------------------------------------------------------
+//StateHistory compute_transfer_trajectory(
+  //  const Vec6& x0,
+  //  const Vec3& rf,
+  //  double tof,
+  //  double n,
+  //  int num_points)
+//{
+  //  StateHistory result;
 
-TwoImpulseResult two_impulse_targeting(
-    const Vec3& r0,
-    const Vec3& v0,
-    const Vec3& rf,
-    double tof,
-    double n)
-{
-    TwoImpulseResult result;
-
-    Mat6 Phi = cw_state_transition_matrix(n, tof);
-
-    // Organize blocks
-    Eigen::Matrix3d Phi_rr = Phi.block<3, 3>(0, 0);
-    Eigen::Matrix3d Phi_rv = Phi.block<3, 3>(0, 3);
-    Eigen::Matrix3d Phi_vr = Phi.block<3, 3>(3, 0);
-    Eigen::Matrix3d Phi_vv = Phi.block<3, 3>(3, 3);
-
-    // Use rf = Phi_rr * r0 + Phi_rv * v_required
-    // v_required = Phi_rv^{-1} * (rf - Phi_rr * r0)
-    Vec3 v_required = Phi_rv.colPivHouseholderQr().solve(rf - Phi_rr * r0);
-
-    // First delta-v needed to change to required velocity
-    result.dv1 = v_required - v0;
-
-    // Arrival velocity from propagation
-    Vec3 v_arrival = Phi_vr * r0 + Phi_vv * v_required;
-
-    // Second delta-v to stop at target (or match target velocity = 0)
-    result.dv2 = -v_arrival;
-
-    result.total_dv = result.dv1.norm() + result.dv2.norm();
-
-    return result;
-}
-
-TransferTrajectory compute_transfer_trajectory(
-    const Vec6& x0,
-    const Vec3& rf,
-    double tof,
-    double n,
-    int num_points)
-{
-    TransferTrajectory result;
-
-    Vec3 r0 = x0.head<3>();
-    Vec3 v0 = x0.tail<3>();
-
-    // Compute maneuvers
-    result.maneuvers = two_impulse_targeting(r0, v0, rf, tof, n);
+   // Vec3 r0 = x0.head<3>();
+   // Vec3 v0 = x0.tail<3>();
 
     // Apply first delta-v
-    Vec6 x0_post;
-    x0_post << r0, v0 + result.maneuvers.dv1;
+   // Vec6 x0_post;
+   // x0_post << r0, v0;
 
-    result.trajectory = propagate_analytical(x0_post, tof, n, num_points);
+    //result.trajectory = propagate_analytical(x0_post, tof, n, num_points);
 
-    return result;
-}
+  //  return result;
+//}
 
 // ----------------------------------------------------------------------------
 // Guideslope Guidance
@@ -80,6 +38,15 @@ TransferTrajectory compute_transfer_trajectory(
 double glideslope_velocity_limit(const Vec3& position, const GlideslopeParams& params) {
     double range = std::max(position.norm(), params.min_range);
     return params.k * range;
+}
+
+double glideslope_approach_angle(const Vec3& position, const Vec3& axis) {
+    double r_magnitude = position.norm();
+    Vec3 r_hat = position / r_magnitude;
+
+    double arg = std::clamp(r_hat.dot(axis), -1.0, 1.0);
+
+    return std::acos(arg);
 }
 
 GlideslopeCheck check_glideslope_violation(const Vec6& x, const GlideslopeParams& params) {
@@ -99,7 +66,7 @@ GlideslopeCheck check_glideslope_violation(const Vec6& x, const GlideslopeParams
     return result;
 }
 
-Vec3 glideslope_guidance(const Vec6& x, const GlideslopeParams& params) {
+Vec3 glideslope_velocity_guidance(const Vec6& x, const GlideslopeParams& params) {
     Vec3 r = x.head<3>();
     Vec3 v = x.tail<3>();
 
@@ -116,6 +83,24 @@ Vec3 glideslope_guidance(const Vec6& x, const GlideslopeParams& params) {
     }
 
     return Vec3::Zero();
+}
+
+Vec3 glideslope_waypoint_guidance(const Vec3& x, const GlideslopeParams& params) {
+    double angle = glideslope_approach_angle(x, params.approach_axis);
+    double radial_dist = x.norm();
+
+    if (std::abs(angle) > params.corridor_angle) {
+        Vec3 waypoint;
+        waypoint << 
+            radial_dist * std::sin(params.corridor_angle), 
+            radial_dist * std::cos(params.corridor_angle),
+            0;
+        
+        return waypoint;
+    }
+
+    return Vec3::Zero();
+
 }
 
 // ----------------------------------------------------------------------------
