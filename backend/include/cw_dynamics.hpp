@@ -1,5 +1,6 @@
 /**
- * Implements analytical and numerical propagation for spacecraft
+ * @file cw_dynamics.hpp
+ * @brief Implements analytical and numerical propagation for spacecraft
  * relative motion in the LVLH (Hill) frame.
  * 
  * Coordinate Frame (LVLH):
@@ -14,19 +15,19 @@
 #ifndef CW_DYNAMICS_HPP
 #define CW_DYNAMICS_HPP
 
-#include <vector>
+#include <array>
 #include <functional>
 
 #include <Eigen/Dense>
 
 namespace relnav {
-
 // ----------------------------------------------------------------------------
 // Constants
 // ----------------------------------------------------------------------------
 
 constexpr double MU_EARTH = 3.986004418e14;  // Earth gravitational parameter [m^3/s^2]
 constexpr double R_EARTH = 6.371e6;          // Earth mean radius [m]
+constexpr int MAX_TRAJECTORY_POINTS = 10000; // Maximum points for a trajectory computation
 
 // ----------------------------------------------------------------------------
 // Type Aliases
@@ -34,23 +35,38 @@ constexpr double R_EARTH = 6.371e6;          // Earth mean radius [m]
 
 using Vec3 = Eigen::Vector3d;
 using Vec6 = Eigen::Matrix<double, 6, 1>;
+using Mat3 = Eigen::Matrix3d;
 using Mat6 = Eigen::Matrix<double, 6, 6>;
 using Mat63 = Eigen::Matrix<double, 6, 3>;
+using Mat36 = Eigen::Matrix<double, 3, 6>;
 using StateHistory = std::vector<std::pair<double, Vec6>>;
-using ControlFunc = std::function<Vec3(double, const Vec6&)>;
 
 // ----------------------------------------------------------------------------
 // Structs
 // ----------------------------------------------------------------------------
 
 /**
+ * @brief State description at a single point
+ */
+struct StatePoint {
+    double t;       // Time [s]
+    Vec6 x;         // State description [x, y, z, v_x, v_y, v_z]
+};
+
+/**
+ * @brief Trajectory information
+ */
+struct Trajectory {
+    std::array<StatePoint, MAX_TRAJECTORY_POINTS> points;
+    int count;
+};
+
+/**
  * @brief Orital parameters for target spacecraft
  */
 struct OrbitalParams {
     double altitude;    // Altitude above Earth surface [m]
-
     explicit OrbitalParams(double alt = 420e3);
-
     double radius() const;
     double mean_motion() const;
     double period() const;
@@ -60,9 +76,9 @@ struct OrbitalParams {
  * @brief Result of propagator validation
  */
 struct ValidationResult {
-    double max_pos_error;     // Maximum position error [m]
-    double max_vel_error;     // Maximum velocity error [m/s]
-    double max_rel_pos_error;  // Maximum relative position error 
+    double max_pos_err;     // Maximum position error [m]
+    double max_vel_err;     // Maximum velocity error [m/s]
+    double max_rel_pos_err;  // Maximum relative position error 
     bool passed;            // Whether validation passed
 };
 
@@ -94,18 +110,24 @@ Mat63 cw_control_matrix();
  */
 Mat6 cw_state_transition_matrix(double n, double t);
 
+// ----------------------------------------------------------------------------
+// Propagation
+// ----------------------------------------------------------------------------
+
 /**
  * @brief Propagate state analytically using state transition matrix
  * @param x0 Initial state [x, y, z, v_x, v_y, v_z]
  * @param duration Propagation duration [s]
  * @param n Mean motion [rad/s]
+ * @param out Output trajectory provided by caller
  * @param num_points Number of output points
  * @return State history as vector of (time, state) pairs
  */
-StateHistory propagate_analytical(
+void propagate_analytical(
     const Vec6& x0,
     double duration,
     double n,
+    Trajectory& out,
     int num_points = 100
 );
 
@@ -123,25 +145,12 @@ Vec6 rk4_step(
     double t,
     double dt,
     double n,
-    const ControlFunc& control_func = nullptr
+    const Vec3& u = Vec3::Zero()
 );
 
-/**
- * @brief Propagate state numerically using RK4
- * @param x0 initial state
- * @param duration Propagation duration [s]
- * @param n Mean motion [rad/s]
- * @param num_points Number of output points
- * @param control_func Optional control function u(t, x)
- * @return State history
- */
-StateHistory propagate_numerical(
-    const Vec6& x0,
-    double duration,
-    double n,
-    int num_popints = 100,
-    const ControlFunc& control_func = nullptr
-);
+// ----------------------------------------------------------------------------
+// Validation
+// ----------------------------------------------------------------------------
 
 /**
  * @brief Validate numerical vs analytical propagation
@@ -155,7 +164,7 @@ ValidationResult validate_propagators(
     const Vec6& x0,
     double duration,
     double n,
-    int num_points = 100
+    int num_steps
 );
 
 }

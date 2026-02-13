@@ -101,25 +101,23 @@ Mat6 cw_state_transition_matrix(double n, double t) {
 // Propagation
 // ----------------------------------------------------------------------------
 
-StateHistory propagate_analytical(
+void propagate_analytical(
     const Vec6& x0,
     double duration,
     double n,
+    Trajectory& out,
     int num_points)
 {
-    StateHistory history;
-    history.reserve(num_points);
+    num_points = std::min(num_points, MAX_TRAJECTORY_POINTS);
+    out.count = num_points;
         
     double dt = duration / (num_points - 1);
 
     for (int i = 0; i < num_points; ++i) {
         double t = i * dt;
-         Mat6 Phi = cw_state_transition_matrix(n, t);
-        Vec6 x = Phi * x0;
-        history.emplace_back(t, x);
+        out.points[i].t = t;
+        out.points[i].x = cw_state_transition_matrix(n, t) * x0;
     }
-
-    return history;
 }
 
 Vec6 rk4_step(
@@ -127,59 +125,23 @@ Vec6 rk4_step(
     double t,
     double dt,
     double n,
-    const ControlFunc& control_func)
+    const Vec3& u)
 {
     Mat6 A = cw_state_matrix(n);
     Mat63 B = cw_control_matrix();
 
-    auto derivatives = [&](double ti, const Vec6& xi) -> Vec6 {
-        Vec6 x_dot = A * xi;
-
-        if (control_func) {
-            Vec3 u = control_func(ti, xi);
-            x_dot += B * u;
-        }
-
-        return x_dot;
+    auto derivatives = [&](const Vec6& xi) -> Vec6 {
+        return A * xi + B * u;
     };
 
-    Vec6 k1 = derivatives(t, x);
-    Vec6 k2 = derivatives(t + dt / 2, x + dt / 2 * k1);
-    Vec6 k3 = derivatives(t + dt / 2, x + dt / 2 * k2);
-    Vec6 k4 = derivatives(t + dt, x + dt * k3);
+    Vec6 k1 = derivatives(x);
+    Vec6 k2 = derivatives(x + dt / 2 * k1);
+    Vec6 k3 = derivatives(x + dt / 2 * k2);
+    Vec6 k4 = derivatives(x + dt * k3);
 
-    return x + dt / 6.0 * (k1 + 2*k2 + 2*k3 + k4);
+    return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
 }
 
-StateHistory propagate_numerical(
-    const Vec6& x0,
-    double duration,
-    double n,
-    int num_points,
-    const ControlFunc& control_func) 
-{
-    StateHistory history;
-    history.reserve(num_points);
-
-    double dt = duration / (num_points - 1);
-    Vec6 x = x0;
-
-    for (int i = 0; i < num_points; ++i) {
-        double t = i * dt;
-        history.emplace_back(t, x);
-
-        if (i < num_points - 1) {
-            int substeps = 100;
-            double subdt = dt / substeps;
-
-            for (int j = 0; j < substeps; ++j) {
-                x = rk4_step(x, t + j*subdt, subdt, n, control_func);
-            }
-        }
-    }
-
-    return history;
-}
 
 // ----------------------------------------------------------------------------
 // Validation
@@ -189,31 +151,39 @@ ValidationResult validate_propagators(
     const Vec6& x0,
     double duration,
     double n,
-    int num_points)
+    int num_steps)
 {
-    auto analytical = propagate_analytical(x0, duration, n, num_points);
-    auto numerical = propagate_numerical(x0, duration, n, num_points);
+    ValidationResult result{0.0, 0.0, 0.0, true};
 
-    ValidationResult result{0, 0, 0, true};
+    double dt = duration / num_steps;
+    Vec6 x_rk4 = x0;
+    double t = 0.0;
 
-    for (size_t i = 0; i < analytical.size(); ++i) {
-        Vec3 pos_err = analytical[i].second.head<3>() - numerical[i].second.head<3>();
-        Vec3 vel_err = analytical[i].second.tail<3>() - numerical[i].second.tail<3>();
+    for (int i = 0; i <= num_steps; ++i) {
+        Vec6 x_stm = cw_state_transition_matrix(n, t) * x0;
 
-        double pos_err_mag = pos_err.norm();
-        double vel_err_mag = vel_err.norm();
-        double pos_mag = analytical[i].second.head<3>().norm();
+        Vec3 pos_err = x_stm.head<3>() - x_rk4.head<3>();
+        Vec3 vel_err = x_stm.tail<3>() - x_rk4.tail<3>();
 
-        result.max_pos_error = std::max(result.max_pos_error, pos_err_mag);
-        result.max_vel_error = std::max(result.max_vel_error, vel_err_mag);
+        result.max_pos_err = std::max(result.max_pos_err, pos_err.norm());
+        result.max_vel_err = std::max(result.max_vel_err, vel_err.norm());
+
+        double pos_mag = x_stm.head<3>().norm();
 
         if (pos_mag > 1e-10) {
-            result.max_rel_pos_error = std::max(result.max_rel_pos_error, pos_err_mag / pos_mag);
+            result.max_rel_pos_err = std::max(
+                result.max_rel_pos_err,
+                pos_err.norm() / pos_mag
+            );
+        }
+
+        if (i < num_steps) {
+            x_rk4 = rk4_step(x_rk4, t, dt, n);
+            t += dt;
         }
     }
 
-    // Pass if error < 0.1 micrometer
-    result.passed = result.max_pos_error < 1e-7;
+    result.passed = result.max_pos_err < 1e-7;
     return result;
 }
 

@@ -24,8 +24,15 @@ add_executable(server
     src/gnc_algorithms.cpp
 )
 
-add_executable(testing 
-    src/tests/test_glideslope_updates.cpp
+add_executable(guidance_testing 
+    src/tests/guidance_tests.cpp
+    src/gnc_algorithms.cpp
+    src/cw_dynamics.cpp
+)
+
+add_executable(monte_carlo_testing
+    src/tests/monte_carlo_tests.cpp
+    src/monte_carlo.cpp
     src/gnc_algorithms.cpp
     src/cw_dynamics.cpp
 )
@@ -39,11 +46,21 @@ target_link_libraries(server PRIVATE
     Eigen3::Eigen
 )
 
-target_include_directories(testing PRIVATE 
+target_include_directories(guidance_testing PRIVATE 
     ${CMAKE_SOURCE_DIR}/include
 )
 
-target_link_libraries(testing PRIVATE 
+target_include_directories(monte_carlo_testing PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(guidance_testing PRIVATE 
+    GTest::gtest
+    GTest::gtest_main
+    Eigen3::Eigen
+)
+
+target_link_libraries(monte_carlo_testing PRIVATE
     GTest::gtest
     GTest::gtest_main
     Eigen3::Eigen

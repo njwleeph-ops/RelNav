@@ -3,294 +3,314 @@
  * @brief Monte Carlo Dispersion Analysis - Implementation
  */
 
+#include <mutex>
+#include <thread>
 #include <algorithm>
 #include <numeric>
 #include <cmath>
+#include <iostream>
 
 #include "monte_carlo.hpp"
 
 namespace relnav {
 
 // ----------------------------------------------------------------------------
-// UncertaintyModel Implementation
+// Sampling Functions
 // ----------------------------------------------------------------------------
 
-UncertaintyModel::UncertaintyModel(const Vec3& pos_err, const Vec3& vel_err)
-    : pos_error(pos_err), vel_error(vel_err) {}
-
-// ----------------------------------------------------------------------------
-// ApproachCorridor Implementation
-// ----------------------------------------------------------------------------
-
-ApproachCorridor::ApproachCorridor(Type t, double rad, double cone_angle, const Vec3& box_half)
-    : type(t), radius(rad), cone_half_angle(cone_angle), box_half_width(box_half) {}
-
-bool ApproachCorridor::is_inside(const Vec3& position) const {
-    switch (type) {
-        case Type::Cylinder:{
-            // Cylindrical corridor along v-bar (y-axis)
-            double radial_dist = std::sqrt(position(0) * position(0) +
-                                           position(2) * position(2));
-            return radial_dist < radius;
-        }
-        case Type::Cone: {
-            double range = position.norm();
-            double radial_dist = std::sqrt(position(0) * position(0) +
-                                           position(2) * position(2));
-            double allowed_radius = range * std::tan(cone_half_angle);
-            return radial_dist < allowed_radius;
-        }
-        case Type::Box: {
-            return std::abs(position(0)) < box_half_width(0) &&
-                   std::abs(position(1)) < box_half_width(1) &&
-                   std::abs(position(2)) < box_half_width(2);
-        }
-    }
-
-    return false;
-}
-
-// ----------------------------------------------------------------------------
-// Sampling
-// ----------------------------------------------------------------------------
-
-std::vector<Vec6> sample_initial_states(
+Vec6 sample_initial_state(
     const Vec6& x0_nominal,
     const UncertaintyModel& uncertainty,
-    int n_samples,
-    unsigned int seed)
+    std::mt19937& rng) 
 {
-    std::mt19937 rng(seed);
-    std::vector<Vec6> samples(n_samples);
+    std::normal_distribution<double> dist(0.0, 1.0);
 
-    // Create normal distribution for each component
-    std::normal_distribution<double> pos_dist_x(0, uncertainty.pos_error(0));
-    std::normal_distribution<double> pos_dist_y(0, uncertainty.pos_error(1));
-    std::normal_distribution<double> pos_dist_z(0, uncertainty.pos_error(2));
-    std::normal_distribution<double> vel_dist_x(0, uncertainty.vel_error(0));
-    std::normal_distribution<double> vel_dist_y(0, uncertainty.vel_error(1));
-    std::normal_distribution<double> vel_dist_z(0, uncertainty.vel_error(2));
+    Vec6 x0 = x0_nominal;
+    x0(0) += uncertainty.pos_error(0) * dist(rng);
+    x0(1) += uncertainty.pos_error(1) * dist(rng);
+    x0(2) += uncertainty.pos_error(2) * dist(rng);
+    x0(3) += uncertainty.vel_error(0) * dist(rng);
+    x0(4) += uncertainty.vel_error(1) * dist(rng);
+    x0(5) += uncertainty.vel_error(2) * dist(rng);
 
-    for (int i = 0; i < n_samples; ++i) {
-        samples[i] = x0_nominal;
-        samples[i](0) += pos_dist_x(rng);
-        samples[i](1) += pos_dist_y(rng);
-        samples[i](2) += pos_dist_z(rng);
-        samples[i](3) += vel_dist_x(rng);
-        samples[i](4) += vel_dist_y(rng);
-        samples[i](5) += vel_dist_z(rng);
+    return x0;
+}
+
+Vec3 disperse_thrust(
+    const Vec3& u_nominal,
+    const UncertaintyModel& uncertainty,
+    std::mt19937& rng)
+{
+    if (u_nominal.norm() < 1e-12) {
+        return u_nominal;
     }
 
-    return samples;
+    std::normal_distribution<double> dist(0.0, 1.0);
+
+    // Magnitude error
+    double mag_scale = 1.0 + uncertainty.thrust_mag_error * dist(rng);
+
+    // Pointing Error - rotate around perpendicular axes
+    double angle1 = uncertainty.thrust_pointing_error * dist(rng);
+    double angle2 = uncertainty.thrust_pointing_error * dist(rng);
+
+    Vec3 u_dir = u_nominal.normalized();
+
+    // Find perpendicular axis directional vectors
+    Vec3 perp1 = u_dir.cross(Vec3::UnitX());
+
+    if (perp1.norm() < 1e-16) {
+        perp1 = u_dir.cross(Vec3::UnitZ());
+    }
+
+    perp1.normalize();
+    Vec3 perp2 = u_dir.cross(perp1).normalized();
+
+    // Apply small rotations
+    Vec3 u_rotated = u_dir + angle1 * perp1 + angle2 * perp2;
+    u_rotated.normalized();
+
+    return mag_scale * u_nominal.norm() * u_rotated;
 }
 
 // ----------------------------------------------------------------------------
-// Covariance Propagation
+// Single Sample Execution
 // ----------------------------------------------------------------------------
 
-Mat6 propagate_covariance_analytical(const Mat6& P0, double n, double t) {
-    Mat6 Phi = cw_state_transition_matrix(n, t);
-    return Phi * P0 * Phi.transpose();
-}
-
-// ----------------------------------------------------------------------------
-// Monte Carlo Analysis
-// ----------------------------------------------------------------------------
-
-MonteCarloResult run_monte_carlo(
-    const Vec6& x0_nominal,
-    double duration,
+MonteCarloSampleResult run_sample(
+    const Vec6& x0,
     double n,
+    const ApproachParams& params,
     const UncertaintyModel& uncertainty,
-    const ApproachCorridor& corridor,
-    int n_samples,
-    int num_times,
-    unsigned int seed)
+    std::mt19937& rng,
+    Vec6& final_state)
 {
-    MonteCarloResult result;
-    result.n_samples = n_samples;
+    MonteCarloSampleResult result;
+    result.total_dv = 0.0;
+    result.success = false;
+    result.saturation_count = 0;
+    
 
-    // Sample initial states
-    auto x0_samples = sample_initial_states(x0_nominal, uncertainty, n_samples, seed);
+    Mat36 K = compute_lqr_gain(n, params.Q, params.R);
 
-    // Initialize storage
-    double dt = duration / (num_times - 1);
-    result.times.resize(num_times);
-    result.ensemble.resize(n_samples);
-    result.mean.resize(num_times, Vec6::Zero());
-    result.covariance.resize(num_times, Mat6::Zero());
-    result.sigma3_pos.resize(num_times);
-    result.corridor_compliance.resize(num_times, 0);
-    result.analytical_cov.resize(num_times);
+    Vec6 x = x0;
+    double t = 0.0;
+    bool entered_corridor = false;
 
-    for (int i = 0; i < num_times; ++i) {
-        result.times[i] = i * dt;
-    }
+    int max_steps = std::min(
+        static_cast<int>(params.timeout / params.dt),
+        MAX_TRAJECTORY_POINTS - 1
+    );
 
-    // Propagate each sample
-    for (int s = 0; s < n_samples; ++s) {
-        auto history = propagate_analytical(x0_samples[s], duration, n, num_times);
-        result.ensemble[s].resize(num_times);
+    for (int i = 0; i <= max_steps; ++i) {
+        double range = x.head<3>().norm();
+        double velocity = x.tail<3>().norm();
 
-        for (int i = 0; i < num_times; ++i) {
-            result.ensemble[s][i] = history[i].second;
+        if (std::isnan(range) || std::isnan(velocity)) {
+            std::cout << "NaN detected at i = " << i << std::endl;
+            std::cout << "x = " << x.transpose() << std::endl;
+            break;
         }
-    }
 
-    // Compute statistics at each time step
-    for (int i = 0; i < num_times; ++i) {
-        // Mean 
-        for (int s = 0; s < n_samples; ++s) {
-            result.mean[i] += result.ensemble[s][i];
+        if (range < params.success_range && velocity < params.success_velocity) {
+            result.success = true;
+            result.final_range = range;
+            result.final_velocity = velocity;
+            result.duration = t;
+            final_state = x;
+            return result;
         }
+
+        if (i == max_steps) {
+            break;
+        }
+
+        bool inside = is_inside_corridor(
+            x.head<3>(),
+            params.corridor_params.corridor_angle,
+            params.corridor_params.approach_axis
+        );
+
+        if (inside) {
+            entered_corridor = true;
+        }
+
+        Vec3 waypoint = entered_corridor ?
+            Vec3::Zero() :
+            compute_edge_waypoint(
+                x.head<3>(),
+                params.corridor_params.corridor_angle,
+                params.corridor_params.approach_axis
+            );
         
-        result.mean[i] /= n_samples;
+        Vec6 x_ref = Vec6::Zero();
+        x_ref.head<3>() = waypoint;
 
-        // Covariance
-        for (int s = 0; s < n_samples; ++s) {
-            Vec6 diff = result.ensemble[s][i] - result.mean[i];
-            result.covariance[i] += diff * diff.transpose();
-        }
-        result.covariance[i] /= (n_samples - 1);
+        // LQR control
+        Vec3 u = compute_lqr_control(x, K, x_ref);
 
-        // 3 standard deviation position bounds
-        result.sigma3_pos[i] = Vec3(
-            3.0 * std::sqrt(result.covariance[i](0, 0)),
-            3.0 * std::sqrt(result.covariance[i](1, 1)),
-            3.0 * std::sqrt(result.covariance[i](2, 2))
-        );
+        // Glideslope Constraint
+        u = apply_glideslope_constraint(u, x, params.dt, params.corridor_params);
 
-        // Corridor compliance
-        int inside_count = 0;
+        // Saturate
+        Vec3 u_sat = saturate_control(u, params.u_max);
 
-        for (int s = 0; s < n_samples; ++s) {
-            if (corridor.is_inside(result.ensemble[s][i].head<3>())) {
-                inside_count++;
-            }
+        if ((u_sat - u).norm() > 1e-10) {
+            result.saturation_count++;
         }
 
-        result.corridor_compliance[i] = static_cast<double>(inside_count) / n_samples;
+        u = u_sat;
+
+        // Apply thrust dispersion
+        Vec3 u_dispersed = disperse_thrust(u, uncertainty, rng);
+
+        // Accumulate delta-v
+        result.total_dv += u_dispersed.norm() * params.dt;
+
+        // RK4 step
+        x = rk4_step(x, t, params.dt, n, u_dispersed);
+        t += params.dt;
     }
 
-    // Build initial covariance matrix from uncertainty model
-    Mat6 P0 = Mat6::Zero();
-    P0(0, 0) = uncertainty.pos_error(0) * uncertainty.pos_error(0);
-    P0(1, 1) = uncertainty.pos_error(1) * uncertainty.pos_error(1);
-    P0(2, 2) = uncertainty.pos_error(2) * uncertainty.pos_error(2);
-    P0(3, 3) = uncertainty.vel_error(0) * uncertainty.vel_error(0);
-    P0(4, 4) = uncertainty.vel_error(1) * uncertainty.vel_error(1);
-    P0(5, 5) = uncertainty.vel_error(2) * uncertainty.vel_error(2);
-
-    // Compute analytical covariance and compare to MC
-    std::vector<double> cov_errors;
-
-    for (int i = 0; i < num_times; ++i) {
-        result.analytical_cov[i] = propagate_covariance_analytical(P0, n, result.times[i]);
-
-        // Compare 3-sigma bounds for position only
-        Vec3 mc3sig = result.sigma3_pos[i];
-        Vec3 ana3sig(
-            3.0 * std::sqrt(result.analytical_cov[i](0, 0)),
-            3.0 * std::sqrt(result.analytical_cov[i](1, 1)),
-            3.0 * std::sqrt(result.analytical_cov[i](2, 2))
-        );
-
-        for (int j = 0; j < 3; ++j) {
-            if (ana3sig(j) > 1e-10) {
-                double err = std::abs(mc3sig(j) - ana3sig(j)) / ana3sig(j) * 100;
-                cov_errors.push_back(err);
-            }
-        }
-    }
-
-    // Compute error stats
-    if (!cov_errors.empty()) {
-        result.max_cov_error = *std::max_element(cov_errors.begin(), cov_errors.end());
-        result.mean_cov_error = std::accumulate(cov_errors.begin(), cov_errors.end(), 0.0) / cov_errors.size();
-    }
+    // Timeout
+    result.final_range = x.head<3>().norm();
+    result.final_velocity = x.tail<3>().norm();
+    result.duration = t;
+    final_state = x;
 
     return result;
 }
 
-TargetedMonteCarloResult run_targeted_monte_carlo(
+// ----------------------------------------------------------------------------
+// Statistics
+// ----------------------------------------------------------------------------
+
+void compute_statistics(MonteCarloResult& result) {
+    if (result.n_samples == 0) {
+        return ;
+    }
+
+    // Count successes
+    result.n_success = 0;
+
+    for (int i = 0; i < result.n_samples; ++i) {
+        if (result.samples[i].success) {
+            result.n_success++;
+        }
+    }
+
+    result.success_rate = static_cast<double>(result.n_success) / result.n_samples;
+
+    // Mean values
+    double sum_dv = 0.0;
+    double sum_duration = 0.0;
+    double sum_range = 0.0;
+    double sum_saturation = 0.0;
+
+    for (int i = 0; i < result.n_samples; ++i) {
+        sum_dv += result.samples[i].total_dv;
+        sum_duration += result.samples[i].duration;
+        sum_range += result.samples[i].final_range;
+        sum_saturation += result.samples[i].saturation_count; 
+    }
+
+    result.mean_dv = sum_dv / result.n_samples;
+    result.mean_duration = sum_duration / result.n_samples;
+    result.mean_final_range = sum_range / result.n_samples;
+    result.mean_saturation_count = sum_saturation / result.n_samples;
+
+    // Standard deviation
+    double sum_sq_dv = 0.0;
+    double sum_sq_duration = 0.0;
+
+    for (int i = 0; i < result.n_samples; ++i) {
+        sum_sq_dv += std::pow(result.samples[i].total_dv - result.mean_dv, 2);
+        sum_sq_duration += std::pow(result.samples[i].duration - result.mean_duration, 2);
+    }
+
+    result.std_dv = std::sqrt(sum_sq_dv / (result.n_samples - 1));
+    result.std_duration = std::sqrt(sum_sq_duration / (result.n_samples - 1));
+}
+
+// ----------------------------------------------------------------------------
+// Monte Carlo with Multi-threading
+// ----------------------------------------------------------------------------
+
+MonteCarloResult run_monte_carlo(
     const Vec6& x0_nominal,
-    const Vec3& target,
-    double tof,
     double n,
+    const ApproachParams& params,
     const UncertaintyModel& uncertainty,
-    const ApproachCorridor& corridor,
     int n_samples,
+    int n_threads,
     unsigned int seed)
 {
-    TargetedMonteCarloResult result;
-    result.target = target;
-    result.n_samples = n_samples;
+    MonteCarloResult result;
+    result.n_samples = std::min(n_samples, MAX_MC_SAMPLES);
 
-    // 1. Compute nominal maneuver
-    Vec3 r0 = x0_nominal.head<3>();
-    Vec3 v0 = x0_nominal.tail<3>();
-    result.nominal_maneuver = two_impulse_targeting(r0, v0, target, tof, n);
+    // Auto-detect thread count
+    if (n_threads <= 0) {
+        n_threads = std::thread::hardware_concurrency();
 
-    // 2. Sample initial states with nav uncertainty
-    auto x0_samples = sample_initial_states(x0_nominal, uncertainty, n_samples, seed);
-
-    // 3. Set up thrust error distribution
-    std::mt19937 rng(seed + 1);
-    std::normal_distribution<double> thrust_mag_error(0, uncertainty.thrust_mag_error);
-    std::normal_distribution<double> thrust_pointing(0, uncertainty.thrust_pointing_error);
-
-    result.final_states.resize(n_samples);
-    result.inside_corridor.resize(n_samples);
-
-    // 4. Propagate each sample with dispersed maneuver
-    for (int i = 0; i < n_samples; ++i) {
-        Vec6 x = x0_samples[i];
-
-        // Apply dv1 errors
-        double mag_scale = 1.0 + thrust_mag_error(rng);
-        double point_err_x = thrust_pointing(rng);
-        double point_err_z = thrust_pointing(rng);
-
-        Vec3 dv1_actual = result.nominal_maneuver.dv1 * mag_scale;
-        dv1_actual(0) += point_err_x * dv1_actual.norm();
-        dv1_actual(2) += point_err_z * dv1_actual.norm();
-
-        x.tail<3>() += dv1_actual;
-
-        // Propagate to arrival
-        Mat6 Phi = cw_state_transition_matrix(n, tof);
-        Vec6 x_final = Phi * x;
-
-        result.final_states[i] = x_final;
-        result.inside_corridor[i] = corridor.is_inside(x_final.head<3>());
+        if (n_threads == 0) {
+            n_threads = 4;
+        }
     }
 
-    // 5. Compute stats
-    Vec3 sum_pos = Vec3::Zero();
-    
-    for (int i = 0; i < n_samples; ++i) {
-        sum_pos += result.final_states[i].head<3>();
+    // Mutex for writing results
+    std::mutex result_mutex;
+    int next_sample = 0;
+
+    // Worker
+    auto worker = [&](unsigned int thread_seed) {
+        std::mt19937 rng(thread_seed);
+
+        while(true) {
+            int sample_idx;
+
+            // Get next sample index
+            {
+                std::lock_guard<std::mutex> lock(result_mutex);
+
+                if (next_sample >= result.n_samples) {
+                    break;
+                }
+
+                sample_idx = next_sample++;
+            }
+
+            // Sample initial state
+            Vec6 x0 = sample_initial_state(x0_nominal, uncertainty, rng);
+
+            // Run closed-loop guidance
+            Vec6 final_state;
+            MonteCarloSampleResult sample = run_sample(
+                x0, n, params, uncertainty, rng, final_state
+            );
+
+            // Store result
+            {
+                std::lock_guard<std::mutex> lock(result_mutex);
+                result.samples[sample_idx] = sample;
+                result.final_states[sample_idx] = final_state;
+            }
+        }
+    };
+
+    // Launch threads
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < n_threads; ++i) {
+        threads.emplace_back(worker, seed + i * 1000);
     }
-    
-    result.mean_arrival = sum_pos / n_samples;
 
-    Vec3 sum_sq = Vec3::Zero();
-
-    for (int i = 0; i < n_samples; ++i) {
-        Vec3 diff = result.final_states[i].head<3>() - result.mean_arrival;
-        sum_sq += Vec3(diff(0) * diff(0), diff(1) * diff(1), diff(2) * diff(2));
+    // Wait for completion
+    for (auto& t : threads) {
+        t.join();
     }
 
-    Vec3 variance = sum_sq / (n_samples - 1);
-    result.sigma3_arrival = Vec3(
-        3.0 * std::sqrt(variance(0)),
-        3.0 * std::sqrt(variance(1)),
-        3.0 * std::sqrt(variance(2))
-    );
-    
-    int inside_count = std::count(result.inside_corridor.begin(),
-                                  result.inside_corridor.end(), true);
-    result.corridor_success_rate = static_cast<double>(inside_count) / n_samples;
+    // Compute stats
+    compute_statistics(result);
 
     return result;
 }

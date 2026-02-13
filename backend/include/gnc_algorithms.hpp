@@ -15,24 +15,13 @@
 
 #include "cw_dynamics.hpp"
 
-namespace relnav{
+namespace relnav {
 
-/**
- * @brief Compute full transfer trajectory
- * @param x0 Initial state
- * @param rf Target position
- * @param tof Time of flight [s]
- * @param n Mean motion [rad/s]
- * @param num_points Number of trajectory points
- * @return Transfer trajectory with maneuvers
- */
-StateHistory compute_transfer_trajectory(
-    const Vec6& x0,
-    const Vec3& rf,
-    double tof,
-    double n,
-    int num_points = 100
-);
+// ----------------------------------------------------------------------------
+// Constants
+// ----------------------------------------------------------------------------
+
+constexpr int MAX_WAYPOINTS = 20;
 
 // ----------------------------------------------------------------------------
 // Glideslope Guidance
@@ -67,7 +56,7 @@ struct GlideslopeCheck {
  * @param params Glideslope parameters
  * @return Maximum approach speed [m/s]
  */
-double glideslope_velocity_limit(const Vec3& position, const GlideslopeParams& params);
+double glideslope_velocity_limit(const Vec3& position, const double k, const double min_range);
 
 /**
  * @brief Compute approach angle based on position relative to target
@@ -78,6 +67,23 @@ double glideslope_velocity_limit(const Vec3& position, const GlideslopeParams& p
 double glideslope_approach_angle(const Vec3& position, const Vec3& axis);
 
 /**
+ * @brief Check if position vector is within approach corridor
+ * @param position Current position of chaser in LVLH [m]
+ * @param corridor_angle Half angle of approach corridor [rad]
+ * @param range Radial range for approach corridor [m] 
+ * @return Whether inside approach corridor or not
+ */
+bool is_inside_corridor(const Vec3& position, const double& corridor_angle, const Vec3& axis);
+
+/**
+ * @brief Compute waypoint on approach corridor edge if outside allowed approach angle
+ * @param position Current position of chaser in LVLH [m]
+ * @param corridor_angle Half angle of approach corridor [rad]
+ * @return Position of intermediate waypoint
+ */
+Vec3 compute_edge_waypoint(const Vec3& position, const double& corridor_angle, const Vec3& axis);
+
+/**
  * @brief Check if glideslope constraint is violated
  * @param x Current state
  * @param params Glideslope parameters
@@ -86,34 +92,17 @@ double glideslope_approach_angle(const Vec3& position, const Vec3& axis);
 GlideslopeCheck check_glideslope_violation(const Vec6& x, const GlideslopeParams& params);
 
 /**
- * @brief Compute glideslope braking command
- * @param x Current state
+ * @brief Clamp control vector to respect glideslope
+ * @param u Thrust vector
+ * @param x State vector
  * @param params Glideslope parameters
- * @return Delta-v command to satisfy constraint [m/s]
  */
-Vec3 glideslope_velocity_guidance(const Vec6& x, const GlideslopeParams& params);
-
-/**
- * @brief Computes waypoints according to position relative to approach corridor
- * @param x Current position state
- * @param params Glideslope parameters
- * @return Waypoint position [m]
- */
-Vec3 glideslope_waypoint_guidance(const Vec3& x, const GlideslopeParams& params);
+Vec3 apply_glideslope_constraint(const Vec3& u, const Vec6& x, double dt, const GlideslopeParams& params);
 
 
 // ----------------------------------------------------------------------------
 // LQR Optimal Control
 // ----------------------------------------------------------------------------
-
-/**
- * @brief LQR Simulation result
- */
-struct LQRSimulationResult {
-    StateHistory trajectory;
-    std::vector<Vec3> control_history;
-    double total_dv;
-};
 
 /**
  * @brief Solve continuous-time algebraic Riccati equation
@@ -129,7 +118,7 @@ Mat6 solve_CARE(
     const Mat6& A,
     const Mat63& B,
     const Mat6& Q,
-    const Eigen::Matrix3d& R,
+    const Mat3& R,
     int max_iter = 1000,
     double tol = 1e-10
 );
@@ -141,10 +130,10 @@ Mat6 solve_CARE(
  * @param R Control cost matrix
  * @return 3x6 gain matrix K
  */
-Eigen::Matrix<double, 3, 6> compute_lqr_gain(
+Mat36 compute_lqr_gain(
     double n, 
     const Mat6& Q = Mat6::Identity(),
-    const Eigen::Matrix3d& R = Eigen::Matrix3d::Identity()
+    const Mat3& R = Mat3::Identity()
 );
 
 /**
@@ -155,32 +144,57 @@ Eigen::Matrix<double, 3, 6> compute_lqr_gain(
  * @param u_max Maximum control magnitude (negative = no limit)
  * @return Control acceleration [m/s^2]
  */
-Vec3 lqr_control(
+Vec3 compute_lqr_control(
     const Vec6& x,
-    const Eigen::Matrix<double, 3, 6>& K,
-    const Vec6& x_ref = Vec6::Zero(),
-    double u_max = -1.0
+    const Mat36& K,
+    const Vec6& x_ref = Vec6::Zero()
 );
 
 /**
- * @brief Simulate LQR-controlled approach
- * @param x0 Initial state
- * @param duration Simulation duration [s]
- * @param n Mean motion [rad/s]
- * @param Q State cost matrix
- * @param R Control cost matrix
- * @param u_max Maximum control acceleration [m/s^2]
- * @param dt Time step [s]
- * @return Simulation result with trajectory and control history
+ * @brief Saturate control magnitude
+ * @param u Thrust control vector
+ * @param u_max Maximum thrust magnitude allowed
  */
-LQRSimulationResult simulate_lqr_approach(
+Vec3 saturate_control(const Vec3& u, double u_max);
+
+// ----------------------------------------------------------------------------
+// Approach Guidance
+// ----------------------------------------------------------------------------
+
+/**
+ * @brief Parameters for approach manuever (if outside approach corridor angle)
+ */
+struct ApproachParams {
+    GlideslopeParams corridor_params;
+    Mat6 Q = Mat6::Identity();
+    Mat3 R = Mat3::Identity();
+    double u_max = 0.01;
+    double dt = 1.0;
+    double timeout = 6000.0;
+    double success_range = 5.0;
+    double success_velocity = 0.05;
+};
+
+/**
+ * @brief Result of approach maneuver
+ */
+struct ApproachResult {
+    Trajectory trajectory;
+    std::array<Vec3, MAX_TRAJECTORY_POINTS> control_history;
+    std::array<Vec3, MAX_TRAJECTORY_POINTS> waypoint_history;
+    int num_points;
+    double total_dv;
+    double final_range;
+    double final_velocity;
+    double duration;
+    bool success;
+    int saturation_count;
+};
+
+ApproachResult run_approach_guidance(
     const Vec6& x0,
-    double duration,
     double n,
-    const Mat6& Q = Mat6::Identity(),
-    const Eigen::Matrix3d& R = Eigen::Matrix3d::Identity(),
-    double u_max = 0.01,
-    double dt = 10.0
+    const ApproachParams& params
 );
 
 }
