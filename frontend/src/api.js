@@ -11,7 +11,10 @@ const API_URL = 'http://localhost:8080/api';
 export async function getHealth() {
     const res = await fetch(`${API_URL}/health`);
 
-    if (!res.ok) throw new Error('Health check failed');
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `Health check failed (${res.status})`);
+    }
 
     return res.json();
 }
@@ -23,7 +26,46 @@ export async function getHealth() {
 export async function getOrbit(altitude = 420e3) {
     const res = await fetch(`${API_URL}/orbit?altitude=${altitude}`);
 
-    if (!res.ok) throw new Error('Failed to fetch orbit info');
+    if (!res.ok) { 
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `Failed to fetch orbit info (${res.status})`);
+    }
+
+    return res.json();
+}
+
+/**
+ * POST /api/approach-guidance
+ */
+export async function runApproachGuidance(params) {
+    const res = await fetch(`${API_URL}/approach-guidance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+    });
+
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `Approach guidance failed (${res.status})`);
+    }
+
+    return res.json();
+}
+
+/**
+ * POST /api/monte-carlo
+ */
+export async function runMonteCarlo(params) {
+    const res = await fetch(`${API_URL}/monte-carlo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+    });
+
+    if (!res.ok) {
+        const error = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `Monte Carlo analysis failed (${res.status})`);
+    }
 
     return res.json();
 }
@@ -39,8 +81,10 @@ export async function propagateTrajectory(params) {
         body: JSON.stringify(params)
     });
 
-    if (!res.ok) throw new Error('Propagation failed');
-    
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `Propagation failed (${res.status})`);
+    }
     return res.json();
 }
 
@@ -55,86 +99,10 @@ export async function validatePropagators(params) {
         body: JSON.stringify(params)
     });
 
-    if (!res.ok) throw new Error('Validation failed');
-
-    return res.json();
-}
-
-
-/**
- * POST /api/two-impulse
- */
-export async function simulateTwoImpulse(params) {
-    const res = await fetch(`${API_URL}/two-impulse`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-    });
-
-    if (!res.ok) throw new Error('Two-impulse targeting failed');
-
-    return res.json();
-}
-
-
-/**
- * POST /api/targeted-monte-carlo
- */
-export async function runTargetedMonteCarlo(params) {
-    const res = await fetch(`${API_URL}/targeted-monte-carlo`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-    });
-
-    if (!res.ok) throw new Error('Targeted Monte Carlo analysis failed');
-
-    return res.json();
-}
-
-/**
- * POST /api/lqr-approach
- */
-export async function simulateLQRApproach(params) {
-    const res = await fetch(`${API_URL}/lqr-approach`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-    });
-
-    if (!res.ok) throw new Error('LQR simulation failed');
-
-    return res.json();
-}
-
-
-/**
- * POST /api/glideslope-check
- */
-export async function checkGlideslope(params) {
-    const res = await fetch(`${API_URL}/glideslope-check`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-    });
-
-    if (!res.ok) throw new Error('Glideslope check failed');
-
-    return res.json();
-}
-
-
-/**
- * POST /api/dv-sweep
- */
-export async function getDVSweep(params) {
-    const res = await fetch(`${API_URL}/dv-sweep`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-    });
-
-    if (!res.ok) throw new Error("DV Sweep failed");
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `Validation failed (${res.status})`);
+    }
 
     return res.json();
 }

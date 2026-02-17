@@ -1,50 +1,47 @@
 import React, { useState, useEffect } from 'react';
-import { getOrbit } from './api';
+import { getHealth, getOrbit } from './api';
 import {
     Header,
     TabNav,
-    PropagatorPanel,
-    MonteCarloPanel,
-    TwoImpulsePanel,
-    LQRPanel
+    GuidancePanel,
+    ValidationPanel,
+    MonteCarloPanel
 } from './Components';
 import './App.css';
 
 function App() {
     const [activeTab, setActiveTab] = useState('propagator');
     const [orbitInfo, setOrbitInfo] = useState(null);
+    const [backendOk, setBackendOk] = useState(false);
 
     useEffect(() => {
+        getHealth()
+            .then(() => setBackendOk(true))
+            .catch(() => setBackendOk(false));
+
         getOrbit(420e3)
             .then(setOrbitInfo)
-            .catch(err => console.error('Failed to fetch orbit info:', err));
+            .catch(() => { });
     }, []);
 
     const renderPanel = () => {
         switch (activeTab) {
-            case 'propagator':
-                return <PropagatorPanel />;
-            case 'montecarlo':
-                return <MonteCarloPanel />;
-            case 'twoimpulse':
-                return <TwoImpulsePanel />;
-            case 'lqr':
-                return <LQRPanel />;
-            default:
-                return <PropagatorPanel />;
+            case 'guidance': return <GuidancePanel />;
+            case 'validation': return <ValidationPanel />;
+            case 'montecarlo': return <MonteCarloPanel />;
+            default: return <GuidancePanel />;
         }
     };
 
     return (
         <div className="app">
-            <Header orbitInfo={orbitInfo} />
+            <Header orbitInfo={orbitInfo} backendOk={backendOk}/>
             <TabNav activeTab={activeTab} onTabChange={setActiveTab} />
             <main className="main-content">
                 {renderPanel()}
             </main>
             <footer className="footer">
-                <p>RelNav-MC v1.0 | C++ Backend + React Frontend</p>
-                <p>CW propagator verified to &lt;1e-10 km | Monte Carlo validated to &lt;2% covariance error</p>
+                <p>RelNav-MC v2.0 | C++ Backend + React Frontend</p>
             </footer>
         </div>
     );

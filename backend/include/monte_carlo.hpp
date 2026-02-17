@@ -134,8 +134,8 @@ MonteCarloSampleResult run_sample(
 MonteCarloResult run_monte_carlo(
     const Vec6& x0_nominal,
     double n,
-    const UncertaintyModel& uncertainty,
     const ApproachParams& params,
+    const UncertaintyModel& uncertainty,
     int n_samples = 10000,
     int n_threads = 0,
     unsigned int seed = 42

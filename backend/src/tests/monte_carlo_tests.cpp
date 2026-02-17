@@ -99,3 +99,199 @@ TEST(DisperseThrust, DirectionChanges) {
 
     EXPECT_GT(max_angle, 0.01);
 }
+
+// ----------------------------------------------------------------------------
+// run_sample
+// ----------------------------------------------------------------------------
+
+TEST(RunSample, SucceedsFromNominal) {
+    Vec6 x0;
+    x0 << 0, -500, 0, 0, 0, 0, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+
+    ApproachParams params;
+    params.Q = Mat6::Identity();
+    params.R = Mat3::Identity();
+    params.corridor_params.k = 0.001;
+
+    UncertaintyModel uncertainty;
+    uncertainty.pos_error = Vec3::Zero();
+    uncertainty.vel_error = Vec3::Zero();
+    uncertainty.thrust_mag_error = 0.0;
+    uncertainty.thrust_pointing_error = 0.0;
+
+    std::mt19937 rng(42);
+    Vec6 final_state;
+
+    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
+
+    EXPECT_TRUE(result.success);
+    EXPECT_LT(result.final_range, params.success_range);
+}
+
+TEST(RunSample, TracksStatistics) {
+    Vec6 x0;
+    x0 << 0, -500, 0, 0, 0, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+    ApproachParams params;
+    params.Q = Mat6::Identity();
+    params.R = Mat3::Identity();
+    params.corridor_params.k = 0.001;
+
+    UncertaintyModel uncertainty;
+
+    std::mt19937 rng(42);
+    Vec6 final_state;
+
+    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
+
+    EXPECT_GT(result.total_dv, 0.0);
+    EXPECT_GT(result.duration, 0.0);
+}
+
+// ----------------------------------------------------------------------------
+// run_monte_carlo
+// ----------------------------------------------------------------------------
+
+TEST(RunMonteCarlo, ReturnsCorrectSampleCount) {
+    Vec6 x0;
+    x0 << 0, -500, 0, 0, 0, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+    ApproachParams params;
+    params.Q = Mat6::Identity();
+    params.R = Mat3::Identity();
+    params.corridor_params.k = 0.001;
+
+    UncertaintyModel uncertainty;
+
+    MonteCarloResult result = run_monte_carlo(x0, n, params, uncertainty, 50, 2, 42);
+
+    EXPECT_EQ(result.n_samples, 50);
+}
+
+TEST(RunMonteCarlo, ComputesSuccessRate) {
+    Vec6 x0;
+    x0 << 0, -500, 0, 0, 0, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+    ApproachParams params;
+    params.Q = Mat6::Identity();
+    params.R = Mat3::Identity();
+    params.corridor_params.k = 0.001;
+
+    UncertaintyModel uncertainty;
+    uncertainty.pos_error =Vec3{5.0, 5.0, 5.0};
+    uncertainty.vel_error = Vec3{0.01, 0.01, 0.01};
+
+    MonteCarloResult result = run_monte_carlo(x0, n, params, uncertainty, 100, 4, 42);
+
+    EXPECT_GE(result.success_rate, 0.0);
+    EXPECT_LE(result.success_rate, 1.0);
+    EXPECT_EQ(result.n_success, static_cast<int>(result.success_rate * result.n_samples));
+}
+
+TEST(RunMonteCarlo, ComputesStatistics) {
+    Vec6 x0;
+    x0 << 0, -500, 0, 0, 0, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+    ApproachParams params;
+    params.Q = Mat6::Identity();
+    params.R = Mat3::Identity();
+    params.corridor_params.k = 0.001;
+
+    UncertaintyModel uncertainty;
+    uncertainty.pos_error = Vec3{5.0, 5.0, 5.0};
+
+    MonteCarloResult result = run_monte_carlo(x0, n, params, uncertainty, 50, 2, 42);
+
+    EXPECT_GT(result.mean_dv, 0.0);
+    EXPECT_GT(result.mean_duration, 0.0);
+    EXPECT_GT(result.std_dv, 0.0);
+}
+
+TEST(RunMonteCarlo, HighUncertaintyLowersSuccessRate) {
+    Vec6 x0;
+    x0 << 0, -500, 0, 0, 0, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+    ApproachParams params;
+    params.Q = Mat6::Identity();
+    params.R = Mat3::Identity();
+    params.corridor_params.k = 0.001;
+    params.timeout = 5000.0;
+
+    // Low uncertainty
+    UncertaintyModel low_uncertainty;
+    low_uncertainty.pos_error = Vec3{1.0, 1.0, 1.0};
+    low_uncertainty.vel_error = Vec3{0.001, 0.001, 0.001};
+    low_uncertainty.thrust_mag_error = 0.01;
+
+    // High uncertainty
+    UncertaintyModel high_uncertainty;
+    high_uncertainty.pos_error = Vec3{50.0, 50.0, 50.0};
+    high_uncertainty.vel_error = Vec3{0.1, 0.1, 0.1};
+    high_uncertainty.thrust_mag_error = 0.1;
+
+    MonteCarloResult low_result = run_monte_carlo(x0, n, params, low_uncertainty, 100, 4, 42);
+    MonteCarloResult high_result = run_monte_carlo(x0, n, params, high_uncertainty, 100, 4, 42);
+
+    EXPECT_GE(low_result.success_rate, high_result.success_rate);
+}
+
+TEST(RunMonteCarlo, MultipleThreadsProduceSameCount) {
+    Vec6 x0;
+    x0 << 0, -500, 0, 0, 0, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+    ApproachParams params;
+    params.Q = Mat6::Identity();
+    params.R = Mat3::Identity();
+    params.corridor_params.k = 0.001;
+
+    UncertaintyModel uncertainty;
+
+    MonteCarloResult result_1_thread = run_monte_carlo(x0, n, params, uncertainty, 100, 1, 42);
+    MonteCarloResult result_4_threads = run_monte_carlo(x0, n, params, uncertainty, 100, 4, 42);
+
+    EXPECT_EQ(result_1_thread.n_samples, result_4_threads.n_samples);
+    EXPECT_EQ(result_1_thread.success_rate, result_4_threads.success_rate);
+}
+
+// ----------------------------------------------------------------------------
+// compute_statistics
+// ----------------------------------------------------------------------------
+
+TEST(ComputeStatistics, HandlesAllSuccess) {
+    MonteCarloResult result;
+    result.n_samples = 3;
+
+    result.samples[0] = {true, 1.0, 0.01, 0.5, 100.0, 0};
+    result.samples[1] = {true, 2.0, 0.02, 0.6, 110.0, 1};
+    result.samples[2] = {true, 1.5, 0.015, 0.55, 105.0, 0};
+
+    compute_statistics(result);
+
+    EXPECT_EQ(result.n_success, 3);
+    EXPECT_NEAR(result.success_rate, 1.0, 1e-10);
+    EXPECT_NEAR(result.mean_dv, 0.55, 1e-10);
+    EXPECT_NEAR(result.mean_duration, 105.0, 1e-10);
+}
+
+TEST(ComputeStatistics, HandlesMixedResults) {
+    MonteCarloResult result;
+    result.n_samples = 4;
+
+    result.samples[0] = {true, 1.0, 0.01, 1.0, 100.0, 0};
+    result.samples[1] = {false, 50.0, 0.5, 2.0, 6000.0, 10};
+    result.samples[2] = {true, 2.0, 0.02, 1.0, 100.0, 0};
+    result.samples[3] = {false, 40.0, 0.4, 2.0, 6000.0, 5};
+
+    compute_statistics(result);
+
+    EXPECT_EQ(result.n_success, 2);
+    EXPECT_NEAR(result.success_rate, 0.5, 1e-10);
+}
