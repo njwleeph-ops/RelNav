@@ -1,20 +1,30 @@
 # RelNav-MC
 
-Spacecraft proximity operations simulator with Monte Carlo dispersion analysis. Built as a portfolio project to demonstrate GNC fundamentals for rendezvous and docking scenarios.
+Spacecraft proximity operations simulator with closed-loop approach guidance and Monte Carlo dispersion analysis. Built as a portfolio project to demonstrate GNC fundamentals for rendezvous and docking scenarios.
 
 ## What This Is
 
 RelNav-MC simulates relative motion between two spacecraft in close proximity using the Clohessy-Wiltshire (CW) equations. These linearized equations describe how a "chaser" spacecraft moves relative to a "target" in a local reference frame (LVLH: Local Vertical Local Horizontal).
 
-The simulator provides four analysis tools:
+The simulator provides three analysis tools:
 
-**CW Propagator** — Free-drift relative motion. Drop a chaser at some offset from the target and watch how orbital mechanics causes it to drift. The classic "football" orbit appears when you start with a pure radial offset.
+**Approach Guidance** — The core simulation. A closed-loop LQR controller drives the chaser toward the target while respecting an approach corridor cone and glideslope velocity constraint. Each timestep: check corridor position, compute a waypoint (corridor edge if outside, origin if inside), solve LQR toward that waypoint, clamp for glideslope, saturate thrust, RK4 step. Reports success/failure, total ΔV, duration, and control saturation count.
 
-**Monte Carlo Analysis** — Plan a two-impulse transfer, then ask: "Given my navigation uncertainty and thruster errors, what's my probability of landing inside an approach corridor?" Runs thousands of dispersed samples to answer this statistically.
+**Propagator Validation** — Analytical (STM) vs numerical (RK4) cross-reference. Propagate any initial condition with the CW state transition matrix, then independently with a fourth-order Runge-Kutta integrator, and compare. Confirms agreement to ~1e-9 m. This is the foundation everything else builds on.
 
-**Two-Impulse Targeting** — Solve the CW Lambert problem: compute the ΔV pair needed to get from point A to point B in a given time. Includes a sweep plot showing how ΔV cost varies with transfer time.
+**Monte Carlo** — Run the full approach guidance loop thousands of times with dispersed initial states and thrust errors. Answers the operational question: "Given realistic navigation and thruster uncertainties, what fraction of approaches succeed?" Reports success rate, ΔV statistics, duration distribution, and final position scatter.
 
-**LQR Control** — Continuous optimal control approach using Linear Quadratic Regulator. Drives the chaser toward the target while minimizing a cost function. Includes glideslope constraint checking (approach velocity must stay below k × range).
+## What Changed (v2.0)
+
+The v1.0 simulator had four separate tools (propagator, Monte Carlo on free drift, two-impulse targeting, LQR with glideslope checking). They were demonstrations — hardcoded scenarios showing that each algorithm worked in isolation.
+
+v2.0 collapses these into a single closed-loop guidance system:
+
+- **Approach corridor** is now a 3D cone with a configurable axis (V-bar, R-bar, or H-bar approach), half-angle, and glideslope gain. The controller computes edge waypoints when outside the corridor and drives directly to target when inside.
+- **Glideslope constraint** is enforced at every timestep, not just checked after the fact. The control vector's approach component is clamped so approach velocity never exceeds k × range.
+- **Monte Carlo** now disperses the full closed-loop guidance run, not just a two-impulse transfer. Each sample gets perturbed initial conditions and thrust errors applied at every control step. This is operationally meaningful — it answers go/no-go questions.
+- **Two-impulse targeting** and the old free-drift Monte Carlo are removed from the API. The CW Lambert solver still exists in the codebase for the test suite.
+- **Trajectory storage** uses fixed-size arrays (`MAX_TRAJECTORY_POINTS`) to avoid heap allocation in the inner loop.
 
 ## The Physics
 
@@ -35,7 +45,7 @@ cd backend
 mkdir build && cd build
 cmake ..
 make
-./server 
+./relnav-server
 ```
 
 **Frontend (React):**
@@ -55,82 +65,95 @@ Frontend: React, react-plotly.js
 
 ## Input Reference
 
-### CW Propagator
+### Approach Guidance
 
 | Input | Description |
 |-------|-------------|
 | x, y, z | Initial position offset from target [m]. x=radial, y=along-track, z=cross-track |
 | vx, vy, vz | Initial velocity [m/s] |
+| Approach Axis | Corridor direction: V-bar (along-track), R-bar (radial), or H-bar (cross-track) |
+| Corridor Angle | Corridor cone half-angle [rad]. 0.175 ≈ 10° |
+| Glideslope k | Velocity limit as fraction of range. v_approach ≤ k × range |
+| Min Range | Range below which glideslope is relaxed [m]. Avoids singularity at origin |
+| Q_pos | LQR state cost on position error. Higher = more aggressive correction |
+| Q_vel | LQR state cost on velocity. Higher = penalizes fast approach |
+| R | LQR control cost. Higher = less fuel, slower convergence |
+| u_max | Thrust saturation limit [m/s²] |
+| dt | Integration timestep [s] |
+| Timeout | Maximum simulation duration [s] |
+| Success Range | Arrival criterion — range to target [m] |
+| Success Velocity | Arrival criterion — speed [m/s] |
+
+Tuning: Start with Q_pos=10, Q_vel=50, R=1. Increase R for fuel-optimal. Decrease dt for accuracy (at cost of compute time for Monte Carlo).
+
+### Propagator Validation
+
+| Input | Description |
+|-------|-------------|
+| x, y, z, vx, vy, vz | Initial state [m, m/s] |
 | Duration | Propagation time in orbital periods |
-| Preset | Common initial conditions (Football, Teardrop, V-bar Hop, etc.) |
+| Preset | Common initial conditions: Football (R-bar offset), Teardrop (V-bar offset), V-bar Hop, Cross-track |
+| Validation Steps | Number of RK4 steps for error comparison |
 
 ### Monte Carlo
 
+All approach guidance inputs, plus:
+
 | Input | Description |
 |-------|-------------|
-| Initial State | Where the chaser starts |
-| Target Position | Where you want to arrive (usually origin) |
-| TOF | Time of flight for the transfer [orbits] |
-| Samples | Number of Monte Carlo runs (1000+ for good statistics) |
-| Corridor | Radius of cylindrical approach corridor [m] |
 | Position Error | 1σ navigation uncertainty in position [m] |
 | Velocity Error | 1σ navigation uncertainty in velocity [m/s] |
-| Thrust Mag Error | 1σ fractional error in thrust magnitude (0.03 = 3%) |
-| Thrust Point Error | 1σ pointing error [rad] |
+| Thrust Mag Error | 1σ fractional error in thrust magnitude (0.02 = 2%) |
+| Thrust Pointing Error | 1σ pointing error [rad] |
+| Samples | Number of Monte Carlo runs. 500+ for rough statistics, 2000+ for convergence |
+| Seed | RNG seed for reproducibility |
 
-### Two-Impulse
+## API Reference
 
-| Input | Description |
-|-------|-------------|
-| Initial State | Starting position and velocity |
-| Target Position | Desired arrival point |
-| TOF | Transfer time — shorter = higher ΔV, longer = lower ΔV (usually) |
-
-### LQR Control
-
-| Input | Description |
-|-------|-------------|
-| Initial State | Starting position |
-| Q_pos | State cost weight on position error. Higher = more aggressive correction |
-| Q_vel | State cost weight on velocity. Higher = smoother approach |
-| R | Control cost weight. Higher = less fuel usage, slower convergence |
-| u_max | Control saturation limit [m/s²] |
-| Glideslope k | Velocity limit as fraction of range. v_approach ≤ k × range |
-
-Tuning LQR: Start with Q_pos=100, Q_vel=10, R=1000. Increase R for fuel-optimal. Increase Q_pos for faster convergence.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/health` | Health check. Returns `{ status, version }` |
+| GET | `/api/orbit?altitude=<m>` | Orbital parameters for given altitude |
+| POST | `/api/propagate` | CW analytical propagation |
+| POST | `/api/validate` | Analytical vs numerical cross-reference |
+| POST | `/api/approach-guidance` | Closed-loop approach simulation |
+| POST | `/api/monte-carlo` | Monte Carlo dispersion analysis |
 
 ## Project Structure
+
 ```
 ├── backend/
 │   ├── include/
-│   │   ├── cw_dynamics.hpp      # CW equations, STM, propagators
-│   │   ├── monte_carlo.hpp      # Uncertainty sampling, ensemble propagation
-│   │   ├── gnc_algorithms.hpp   # Two-impulse, LQR, glideslope
-│   │   ├── cpp-httplib          # httplib.h header inside
-│   │   └── json                 # nlohmann json header inside json/include/
+│   │   ├── cw_dynamics.hpp            # CW equations, STM, RK4, Trajectory struct
+│   │   ├── gnc_algorithms.hpp         # Corridor, glideslope, LQR, approach guidance
+│   │   ├── monte_carlo.hpp            # Uncertainty model, sampling, MC analysis
+│   │   ├── cpp-httplib/               # httplib.h header
+│   │   └── json/                      # nlohmann json header
 │   ├── src/
 │   │   ├── cw_dynamics.cpp
-│   │   ├── monte_carlo.cpp
 │   │   ├── gnc_algorithms.cpp
-│   │   ├── main.cpp           # REST API
-│   │   └── test_dynamics.cpp    # Validation suite
+│   │   ├── monte_carlo.cpp
+│   │   ├── main.cpp                   # REST API server
+│   │   └── tests/                     # Validation suite
+│   │       ├── guidance_tests.cpp     # GNC Algo unit tests
+│   │       └── monte_carlo_tests.cpp  # Monte Carlo analysis unit tests
 │   └── CMakeLists.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── api.js               # Backend API calls
+│   │   ├── api.js                     # Backend API calls
+│   │   ├── components/
+│   │   │   ├── Header.jsx
+│   │   │   ├── TabNav.jsx
+│   │   │   ├── GuidancePanel.jsx
+│   │   │   ├── ValidationPanel.jsx
+│   │   │   └── MonteCarloPanel.jsx
+│   │   ├── constants.js               # Plotly theme, ISS defaults
 │   │   ├── App.jsx
-│   │   └── Components/
-│   │       ├── PropagatorPanel.jsx
-│   │       ├── MonteCarloPanel.jsx
-│   │       ├── TwoImpulsePanel.jsx
-│   │       └── LQRPanel.jsx
+│   │   └── App.css
 │   ├── public/
 │   │   └── index.html
-│   ├── node_modules/       # Created by npm install (default)
-│   ├── package-lock.json   # Created by npm install (default) 
 │   └── package.json
 ├── README.md
-├── CMakeLists.txt
 └── .gitignore
 ```
 
@@ -138,9 +161,11 @@ Tuning LQR: Start with Q_pos=100, Q_vel=10, R=1000. Increase R for fuel-optimal.
 
 The test suite (`test_dynamics`) verifies:
 - Analytical vs numerical propagator agreement (<1e-9 m)
-- Monte Carlo convergence to analytical covariance (<2% error at N=2000)
-- Two-impulse arrival accuracy (machine precision)
-- State transition matrix properties (Φ(0)=I, det(Φ)=1)
+- State transition matrix properties (Φ(0) = I, det(Φ) = 1)
+- Corridor angle computation and edge waypoint geometry
+- Glideslope constraint enforcement
+- LQR gain convergence (CARE solver)
+- Approach guidance termination (success within radius and velocity thresholds)
 
 ## References
 
