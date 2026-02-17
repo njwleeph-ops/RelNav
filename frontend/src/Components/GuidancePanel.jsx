@@ -8,8 +8,9 @@ function GuidancePanel() {
     const [x0, setX0] = useState({ x: 200, y: -500, z: 0, vx: 0, vy: 0, vz: 0 });
 
     // --- Corridor params (mas to corridor JSON object) ---
+    const [approachAxis, setApproachAxis] = useState('vbar');
     const [corridorAngle, setCorridorAngle] = useState(0.175);
-    const [glidelopeK, setGlideslopeK] = useState(0.001);
+    const [glideslopeK, setGlideslopeK] = useState(0.001);
     const [minRange, setMinRange] = useState(10.0);
 
     // --- LQR weights ---
@@ -39,6 +40,7 @@ function GuidancePanel() {
                 initialState: createState(x0.x, x0.y, x0.z, x0.vx, x0.vy, x0.vz),
                 altitude,
                 corridor: {
+                    axis: { vbar: { x: 0, y: -1, z: 0 }, rbar: { x: -1, y: 0, z: 0 }, hbar: { x: 0, y: 0, z: -1} }[approachAxis],
                     corridorAngle, 
                     glideslopeK,
                     minRange,
@@ -168,6 +170,14 @@ function GuidancePanel() {
 
                 <h4>Approach Corridor</h4>
                 <div className="input-row">
+                    <label>
+                        Approach Axis:
+                        <select value={approachAxis} onChange={e => setApproachAxis(e.target.value)}>
+                            <option value="vbar">V-bar (along-track)</option>
+                            <option value="rbar">R-bar (radial)</option>
+                            <option value="hbar">H-bar (cross-track)</option>
+                        </select>
+                    </label>
                     <label>
                         Corridor Angle:
                         <input type="number" value={corridorAngle} step="0.01" min="0.01"

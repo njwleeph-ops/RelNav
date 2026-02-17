@@ -364,10 +364,71 @@ function MonteCarloPanel() {
                             <span className="metric-label">Success Rate</span>
                             <span className="metric-value">{(result.successRate * 100).toFixed(1)}%</span>
                         </div>
+                        <div className="metric">
+                            <span className="metric-label">Samples</span>
+                            <span className="metric-value">{result.nSuccess} / {result.nSamples}</span>
+                        </div>
+                        <div className="metric">
+                            <span className="metric-label">Mean dv</span>
+                            <span className="metric-vaue">{result.meanDV.toFixed(3)} ± {result.stdDV.toFixed(3)} m/s</span>
+                        </div>
+                        <div className="metric">
+                            <span className="metric-label">Mean Duration</span>
+                            <span className="metric-value">{result.meanDuration.toFixed(0)} ± {result.stdDuration.toFixed(0)} s</span>
+                        </div>
+                        <div className="metric">
+                            <span className="metric-label">Mean Final Range</span>
+                            <span className="metric-value">{result.meanFinalRange.toFixed(2)} m</span>
+                        </div>
+                        <div className="metric">
+                            <span className="metric-label">Mean Saturations</span>
+                            <span className="metric-value">{result.meanSaturationCount.toFixed(1)}</span>
+                        </div>
+                    </div>
+
+                    {/* Plots */}
+                    <div className="plot-grid">
+                        <div className="plot-container">
+                            <Plot
+                                data={scatterTraces}
+                                layout={dark3DLayout({
+                                    title: { text: 'Final Position Scatter (LVLH)', font: { color: '#c8c8d8' } },
+                                })}
+                                config={PLOTLY_CONFIG}
+                                style={{ width: '100%', height: '500px' }}
+                            />
+                        </div>
+                        <div className="plot-container">
+                            <Plot
+                                data={dvTraces}
+                                layout={darkLayout({
+                                    title: { text: 'dv Distribution', font: { color: '#c8c8d8' } },
+                                    xaxis: { title: 'Total dv [m/s' },
+                                    yaxis: { title: 'Count' },
+                                    showlegend: false,
+                                })}
+                                config={PLOTLY_CONFIG}
+                                style={{ width: '100%', height: '350px' }}
+                            />
+                        </div>
+                        <div className="plot-container">
+                            <Plot
+                                data={durTraces}
+                                layout={darkLayout({
+                                    title: { text: 'Duration Distribution', font: { color: '#c8c8d8' } },
+                                    xaxis: { title: 'Duration [s]' },
+                                    yaxis: { title: 'Count' },
+                                    showlegend: false,
+                                })}
+                                config={PLOTLY_CONFIG}
+                                style={{ width: '100%', height: '350px' }}
+                            />
+                        </div>
                     </div>
                 </>
             )}
-
         </div>
-    )
+    );
 }
+
+export default MonteCarloPanel;
