@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import Plot from 'react-plotly.js';
 import { runApproachGuidance, createState } from '../api';
-import { ISS_ALTITUDE, darkLayout, PLOTLY_CONFIG, COLOR } from '../constants';
+import { ISS_ALTITUDE, darkLayout, dark3DLayout, computeSymmetricRanges, PLOTLY_CONFIG, COLORS } from '../constants';
 
 function GuidancePanel() {
     // --- Initial state ---
@@ -12,6 +12,32 @@ function GuidancePanel() {
     const [corridorAngle, setCorridorAngle] = useState(0.175);
     const [glideslopeK, setGlideslopeK] = useState(0.001);
     const [minRange, setMinRange] = useState(10.0);
+
+    // Axis-dependent defaults: chaser must start on approach side of approach axis
+    const AXIS_DEFAULTS = {
+        vbar: { x: 200, y: -500, z: 100, vx: 0, vz: 0 },
+        rbar: { x: -500, y: 200, z: 100, vx: 0, vy: 0, vz: 0 },
+        hbar: { x: 200, y: 200, z: -500, vx: 0, vy: 0, vz: 0 },
+    };
+
+    const AXIS_CONSTRAINT = { vbar: 'y', rbar: 'x', hbar: 'z' };
+
+    const handleAxisChange = (axis) => {
+        setApproachAxis(axis);
+        setX0(AXIS_DEFAULTS[axis]);
+    };
+
+    // Input constraint
+    const constrainedKey = AXIS_CONSTRAINT[approachAxis];
+    const handleStateChange = (key, value) => {
+        const v = parseFloat(value) || 0;
+        
+        if (key === constrainedKey && v > 0) {
+            setX0({ ...x0, [key]: -Math.abs(v) });
+        } else {
+            setX0({ ...x0, [key]: v });
+        }
+    };
 
     // --- LQR weights ---
     const [qPos, setQPos] = useState(10);
@@ -53,7 +79,6 @@ function GuidancePanel() {
                 successRange,
                 successVelocity,
             });
-            
             setResult(data);
         } catch (e) {
             setError(e.message);
@@ -64,11 +89,17 @@ function GuidancePanel() {
 
     // --- Trajectory plot ---
     const trajTraces = [];
+    let trajRanges = {};
     if (result) {
+        const vbar = result.trajectory.map(p => p.y);
+        const rbar = result.trajectory.map(p => p.x);
+        const hbar = result.trajectory.map(p => p.z);
+        trajRanges = computeSymmetricRanges({ x: vbar, y: rbar, z: hbar });
+
         trajTraces.push({
-            x: result.trajectory.map(p => p.y),
-            y: result.trajectory.map(p => p.x),
-            z: result.trajectory.map(p => p.z),
+            x: vbar,
+            y: rbar,
+            z: hbar,
             mode: 'lines',
             name: 'Trajectory',
             type: 'scatter3d',
@@ -135,7 +166,7 @@ function GuidancePanel() {
         rangeTraces.push({
             x: [times[0], times[timeout.length - 1]],
             y: [successRange, successRange],
-            mode: 'lines', name: `Success (${successRadius} m)`,
+            mode: 'lines', name: `Success (${successRange} m)`,
             line: { color: COLORS.green, width: 1, dash: 'dash' },
         });
     }
@@ -151,9 +182,10 @@ function GuidancePanel() {
                 <h4>Initial State (LVLH)</h4>
                 <div className="input-row">
                     {['x', 'y', 'z'].map(k => (
-                        <label key={k}>{k}:
+                        <label key={k} className={k === constrainedKey ? 'constrained' : ''}>
+                            {k}{k === constrainedKey ? ' ≤ 0' : ''}:
                             <input type="number" value={x0[k]}
-                                onChange={e => setX0({ ...x0, [k]: parseFloat(e.target.value) || 0 })} 
+                                onChange={e => handleStateChange(k, e.target.value)} 
                             /> m
                         </label>
                     ))}
@@ -162,7 +194,7 @@ function GuidancePanel() {
                     {['vx', 'vy', 'vz'].map(k => (
                         <label key={k}>{k}:
                             <input type="number" value={x0[k]} step="0.01"
-                                onChange={e => setX0({ ...x0, [k]: parseFloat(e.target.value) || 0 })}
+                                onChange={e => handleStateChange(k, e.target.value)}
                             /> m/s
                         </label>
                     ))}
@@ -172,7 +204,7 @@ function GuidancePanel() {
                 <div className="input-row">
                     <label>
                         Approach Axis:
-                        <select value={approachAxis} onChange={e => setApproachAxis(e.target.value)}>
+                        <select value={approachAxis} onChange={e => handleAxisChange(e.target.value)}>
                             <option value="vbar">V-bar (along-track)</option>
                             <option value="rbar">R-bar (radial)</option>
                             <option value="hbar">H-bar (cross-track)</option>
@@ -275,32 +307,30 @@ function GuidancePanel() {
             {result && (
                 <>
                     {/* Metrics */}
-                    <div className="metric-row">
-                        <div className={`metric ${result.success ? 'highlight-ok' : 'highlight-err'}`}>
-                            <span className="metric-label">Result</span>
-                            <span className="metric-value">{result.success ? 'SUCCESS' : 'FAILED'}</span>
-                        </div>
-                        <div className="metric">
-                            <span className="metric-label">Total dv</span>
-                            <span className="metric-value">{result.totalDV.toFixed(3)} m/s</span>
-                        </div>
-                        <div className="metric">
-                            <span className="metric-label">Final Range</span>
-                            <span className="metric-value">{result.finalRange.toFixed(2)} m</span>
-                        </div>
-                        <div className="metric">
-                            <span className="metric-label">Final Velocity</span>
-                            <span className="metric-value">{result.finalVelocity.toFixed(2)} m/s</span>
-                        </div>
-                        <div className="metric">
-                            <span className="metric-label">Duration</span>
-                            <span className="metric-value">{result.duration.toFixed(3)} s</span>
-                        </div>
-                        <div className="metric">
-                            <span className="metric-label">Saturations</span>
-                            <span className="metric-value">{result.saturationCount}</span>
-                        </div>
-                    </div>
+                    <table className="metric-table">
+                        <thead>
+                            <tr>
+                                <th>Result</th>
+                                <th>Total dv</th>
+                                <th>Final Range</th>
+                                <th>Final Velocity</th>
+                                <th>Duration</th>
+                                <th>Saturation Count</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td className={result.success ? 'val-ok' : 'val-err'}>
+                                    {result.success ? 'SUCCESS' : 'FAILED'}
+                                </td>
+                                <td>{result.totalDV.toFixed(3)} m/s</td>
+                                <td>{result.finalRange.toFixed(2)} m</td>
+                                <td>{result.finalVelocity.toFixed(2)} m/s</td>
+                                <td>{result.duration.toFixed(0)} s</td>
+                                <td>{result.saturationCount}</td>
+                            </tr>
+                        </tbody>
+                    </table>
 
                     {/* Plots */}
                     <div className="plot-grid">
@@ -308,7 +338,8 @@ function GuidancePanel() {
                             <Plot
                                 data={trajTraces}
                                 layout={dark3DLayout({
-                                    title: { text: 'Approach Trajectory (LVLH)', font: { color: '#c8c8c8' } },
+                                    title: { text: 'Approach Trajectory (LVLH)', font: { color: '#c8c8d8' } },
+                                    ...trajRanges,
                                 })}
                                 config={PLOTLY_CONFIG}
                                 style={{ width: '100%', height: '500px' }}
@@ -318,7 +349,7 @@ function GuidancePanel() {
                             <Plot
                                 data={rangeTraces}
                                 layout={darkLayout({
-                                    title: { text: 'Range to Target', font: { color: '#c8c8c8' } },
+                                    title: { text: 'Range to Target', font: { color: '#c8c8d8' } },
                                     xaxis: { title: 'Time [s]' },
                                     yaxis: { title: 'Range [m]' },
                                 })}
@@ -330,7 +361,7 @@ function GuidancePanel() {
                             <Plot
                                 data={ctrlTraces}
                                 layout={darkLayout({
-                                    title: { text: 'Control Magnitude', font: { color: '#c8c8c8' }},
+                                    title: { text: 'Control Magnitude', font: { color: '#c8c8d8' }},
                                     xaxis: { title: 'Time [s]' },
                                     yaxis: { title: '|u| [m/s^2]' },
                                 })}

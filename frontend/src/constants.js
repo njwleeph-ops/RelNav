@@ -33,7 +33,7 @@ export function darkLayout(overrides = {}) {
         ...base,
         ...overrides,
         xaxis: { color: SUBTLE, gridcolor: GRID, zerolinecolor: ZERO, ...(overrides.xaxis || {}) },
-        yaxis: { color: SUBTLE, gridcolor: Grid, zerolinecolor: ZERO, ...(overrides.yaxis || {}) },
+        yaxis: { color: SUBTLE, gridcolor: GRID, zerolinecolor: ZERO, ...(overrides.yaxis || {}) },
     };
 }
 
@@ -42,8 +42,10 @@ export function dark3DLayout(overrides = {}) {
         color: SUBTLE,
         gridcolor: GRID,
         zerolinecolor: ZERO,
+        zerolinewidth: 2,
         backgroundcolor: '#0a0a16',
         showbackground: true,
+        showspikes: false,
     };
 
     return {
@@ -58,10 +60,28 @@ export function dark3DLayout(overrides = {}) {
             zaxis: { ...axisBase, title: 'H-bar [m]', ...(overrides.zaxis || {}) },
             bgcolor: '#0e0e1a',
             camera: overrides.camera || { eye: { x: 1.5, y: 1.5, z: 1.0 } },
-            aspectmode: 'data',
+            aspectmode: 'cube',
             ...(overrides.scene || {}),
         },
         ...overrides,
+    };
+}
+
+export function computeSymmetricRanges(coords, padding = 0.15) {
+    const { x, y, z } = coords;
+    const maxAbs = Math.max(
+        ...x.map(Math.abs),
+        ...y.map(Math.abs),
+        ...z.map(Math.abs),
+        1
+    );
+    const bound = maxAbs * (1 + padding);
+    const range = [-bound, bound];
+
+    return {
+        xaxis: { range },
+        yaxis: { range },
+        zaxis: { range },
     };
 }
 

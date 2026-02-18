@@ -108,8 +108,8 @@ void propagate_analytical(
     Trajectory& out,
     int num_points)
 {
-    num_points = std::min(num_points, MAX_TRAJECTORY_POINTS);
     out.count = num_points;
+    out.points.resize(num_points);
         
     double dt = duration / (num_points - 1);
 

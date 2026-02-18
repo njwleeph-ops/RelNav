@@ -423,3 +423,91 @@ TEST(RunApproachGuidance, TrajectoryCountMatchesNumPoints) {
     EXPECT_EQ(result.trajectory.count, result.num_points);
     EXPECT_GT(result.num_points, 0);
 }
+
+// ----------------------------------------------------------------------------
+// R-bar approach Testing
+// ----------------------------------------------------------------------------
+TEST(RBarApproach, CorridorAngleOnRbarAxis) {
+    Vec3 position{-500, 0, 0};
+    Vec3 axis{-1, 0, 0};
+
+    double angle = glideslope_approach_angle(position, axis);
+
+    EXPECT_NEAR(angle, 0.0, 1e-6);
+}
+
+TEST(RBarApproach, CorridorAngleOffRbarAxis) {
+    Vec3 position{0, -500, 0};
+    Vec3 axis{-1, 0, 0};
+
+    double angle = glideslope_approach_angle(position, axis);
+
+    EXPECT_NEAR(angle, M_PI / 2.0, 1e-6);
+}
+
+TEST(RBarApproach, InsideCorridorOnRbar) {
+    Vec3 position{-500, 0, 0};
+    double angle = 0.175;
+    Vec3 axis{-1, 0, 0};
+
+    EXPECT_TRUE(is_inside_corridor(position, angle, axis));
+}
+
+TEST(RBarApproach, OutsideCorridorFromRbar) {
+    Vec3 position{-500, 500, 0};
+    double angle = 0.175;
+    Vec3 axis{-1, 0, 0};
+
+    EXPECT_FALSE(is_inside_corridor(position, angle, axis));
+}
+
+TEST(RBarApproach, EdgeWaypointFromRbar) {
+    Vec3 position{-300, 300, 0};
+    double angle = 0.175;
+    Vec3 axis{-1, 0, 0};
+
+    Vec3 waypoint = compute_edge_waypoint(position, angle, axis);
+
+    EXPECT_NEAR(waypoint.norm(), position.norm(), 1e-4);
+    
+    double waypoint_angle = glideslope_approach_angle(waypoint, axis);
+    EXPECT_NEAR(waypoint_angle, angle, 1e-4);
+}
+
+TEST(RBarApproach, EdgeWaypointPointsTowardTarget) {
+    Vec3 position{-300, 300, 0};
+    double angle = 0.175;
+    Vec3 axis{-1, 0, 0};
+
+    Vec3 waypoint = compute_edge_waypoint(position, angle, axis);
+
+    double position_angle = glideslope_approach_angle(position, axis);
+    double waypoint_angle = glideslope_approach_angle(waypoint, axis);
+
+    EXPECT_LT(waypoint_angle, position_angle);
+}
+
+TEST(RBarApproach, DirectApproachOnRbar) {
+    Vec6 x0;
+    x0 << -200, 0, 0, 0, 0, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+
+    ApproachParams params;
+    params.corridor_params.approach_axis = Vec3{-1, 0, 0};
+    params.Q = Mat6::Identity();
+    params.R = Mat3::Identity();
+    params.u_max = 0.01;
+    params.timeout = 6000.0;
+
+    ApproachResult result = run_approach_guidance(x0, n, params);
+
+    std::cout << "success = " << result.success
+              << " range = " << result.final_range
+              << " velocity = " << result.final_velocity
+              << " dv = " << result.total_dv
+              << " duration = " << result.duration << std::endl;
+
+    EXPECT_TRUE(result.success);
+    EXPECT_LT(result.final_range, params.success_range);
+}

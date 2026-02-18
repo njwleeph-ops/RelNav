@@ -180,8 +180,8 @@ struct ApproachParams {
  */
 struct ApproachResult {
     Trajectory trajectory;
-    std::array<Vec3, MAX_TRAJECTORY_POINTS> control_history;
-    std::array<Vec3, MAX_TRAJECTORY_POINTS> waypoint_history;
+    std::vector<Vec3> control_history;
+    std::vector<Vec3> waypoint_history;
     int num_points;
     double total_dv;
     double final_range;

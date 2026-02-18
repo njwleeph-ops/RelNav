@@ -19,6 +19,33 @@ namespace relnav {
 constexpr int MAX_MC_SAMPLES = 10000;
 
 // ----------------------------------------------------------------------------
+// Failure Classification
+// ----------------------------------------------------------------------------
+
+enum class FailureReason {
+NONE = 0,               // Success - no failure
+POSITION_TIMEOUT,       // Timeout, chaser could never reach target position
+EXCESS_VELOCITY,        // Guidance algorithm unable to clamp velocity effectively
+GLIDESLOPE_TRAPPED         // Oscillations caused by velocity limiting causing chaser to converge at incorrect range (WIP)
+};
+
+inline const char* failure_reason_to_string(FailureReason r) {
+    switch(r) {
+        case FailureReason::NONE:
+            return "none";
+        case FailureReason::POSITION_TIMEOUT:
+            return "position_timeout";
+        case FailureReason::EXCESS_VELOCITY:
+            return "excess_velocity";
+        case FailureReason::GLIDESLOPE_TRAPPED:
+            return "glideslope_trapped";
+        default:
+            return "N/A";
+    }
+}
+
+
+// ----------------------------------------------------------------------------
 // Structs
 // ----------------------------------------------------------------------------
 
@@ -34,7 +61,6 @@ struct UncertaintyModel {
     double thrust_pointing_error = 0.0175;       // Thrust pointing error 
 
     UncertaintyModel() = default;
-    UncertaintyModel(const Vec3& pos_err, const Vec3& vel_err);
 };
 
 // ----------------------------------------------------------------------------
@@ -75,12 +101,34 @@ Vec3 disperse_thrust(
  */
 struct MonteCarloSampleResult {
     bool success;
+    FailureReason failure_reason = FailureReason::NONE;
     double final_range;
     double final_velocity;
     double total_dv;
     double duration;
     int saturation_count;
-    double max_estimation_error;
+};
+
+/**
+ * @brief Percential stats for distribution
+ */
+struct PercentileStats {
+    double p50 = 0.0;
+    double p75 = 0.0;
+    double p90 = 0.0;
+    double p95 = 0.0;
+    double p99 = 0.0;
+    double min = 0.0;
+    double max = 0.0;
+};
+
+/**
+ * @brief Failure mode breakdown
+ */
+struct FailureBreakdown {
+    int position_timeout = 0;
+    int excess_velocity = 0;
+    int glideslope_trapped = 0;
 };
 
 /**
@@ -99,9 +147,16 @@ struct MonteCarloResult {
     double mean_final_range;
     double mean_saturation_count;
 
+    // Percentiles
+    PercentileStats dv_percentiles;
+    PercentileStats duration_percentiles;
+
+    // Failure breakdown
+    FailureBreakdown failures;
+
     // Raw results
-    std::array<MonteCarloSampleResult, MAX_MC_SAMPLES> samples;
-    std::array<Vec6, MAX_MC_SAMPLES> final_states;
+    std::vector<MonteCarloSampleResult> samples;
+    std::vector<Vec6> final_states;
 };
 
 // ----------------------------------------------------------------------------

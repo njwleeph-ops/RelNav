@@ -57,7 +57,7 @@ struct StatePoint {
  * @brief Trajectory information
  */
 struct Trajectory {
-    std::array<StatePoint, MAX_TRAJECTORY_POINTS> points;
+    std::vector<StatePoint> points;
     int count;
 };
 

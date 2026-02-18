@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import Plot from 'react-plotly.js';
 import { propagateTrajectory, validatePropagators, createState } from '../api';
-import { ISS_ALTITUDE, ISS_PERIOD, darkLayout, dark3DLayout, PLOTLY_CONFIG, COLORS } from '../constaints';
+import { ISS_ALTITUDE, ISS_PERIOD, darkLayout, dark3DLayout, PLOTLY_CONFIG, COLORS } from '../constants';
 
 const PRESETS = {
     football: { label: 'Football (R-bar offset)', state: { x: 1000, y: 0, z: 0, vx: 0, vy: 0, vz: 0 } },
@@ -11,8 +11,8 @@ const PRESETS = {
 };
 
 function ValidationPanel() {
-    const [preset, setPreset] = usedState('football');
-    const [x0, setX0] = useState({ ...PRESETS.fottball.state });
+    const [preset, setPreset] = useState('football');
+    const [x0, setX0] = useState({ ...PRESETS.football.state });
     const [durationOrbits, setDurationOrbits] = useState(2.0);
     const [numPoints, setNumPoints] = useState(500);
     const [numSteps, setNumSteps] = useState(1000);

@@ -106,12 +106,14 @@ TEST(DisperseThrust, DirectionChanges) {
 
 TEST(RunSample, SucceedsFromNominal) {
     Vec6 x0;
-    x0 << 0, -500, 0, 0, 0, 0, 0;
+    x0 << 0, -500, 0, 0, 0, 0;
 
     double n = OrbitalParams(420e3).mean_motion();
 
     ApproachParams params;
     params.Q = Mat6::Identity();
+    params.Q.block<3, 3>(0, 0) *= 10.0;
+    params.Q.block<3, 3>(3, 3) *= 50.0;
     params.R = Mat3::Identity();
     params.corridor_params.k = 0.001;
 
@@ -126,8 +128,15 @@ TEST(RunSample, SucceedsFromNominal) {
 
     MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
 
+    ApproachResult guidance_result = run_approach_guidance(x0, n, params);
+
     EXPECT_TRUE(result.success);
     EXPECT_LT(result.final_range, params.success_range);
+
+    std::cout << guidance_result.success << " | " << guidance_result.final_range 
+              << " | " << guidance_result.trajectory.count << std::endl;
+
+    std::cout << "failure reason is " << failure_reason_to_string(result.failure_reason) << std::endl;
 }
 
 TEST(RunSample, TracksStatistics) {
@@ -268,10 +277,12 @@ TEST(RunMonteCarlo, MultipleThreadsProduceSameCount) {
 TEST(ComputeStatistics, HandlesAllSuccess) {
     MonteCarloResult result;
     result.n_samples = 3;
+    result.samples.resize(3);
+    result.final_states.resize(3);
 
-    result.samples[0] = {true, 1.0, 0.01, 0.5, 100.0, 0};
-    result.samples[1] = {true, 2.0, 0.02, 0.6, 110.0, 1};
-    result.samples[2] = {true, 1.5, 0.015, 0.55, 105.0, 0};
+    result.samples[0] = {true, FailureReason::NONE, 1.0, 0.01, 0.5, 100.0, 0};
+    result.samples[1] = {true, FailureReason::NONE, 2.0, 0.02, 0.6, 110.0, 1};
+    result.samples[2] = {true, FailureReason::NONE, 1.5, 0.015, 0.55, 105.0, 0};
 
     compute_statistics(result);
 
@@ -284,14 +295,69 @@ TEST(ComputeStatistics, HandlesAllSuccess) {
 TEST(ComputeStatistics, HandlesMixedResults) {
     MonteCarloResult result;
     result.n_samples = 4;
+    result.samples.resize(4);
+    result.final_states.resize(4);
 
-    result.samples[0] = {true, 1.0, 0.01, 1.0, 100.0, 0};
-    result.samples[1] = {false, 50.0, 0.5, 2.0, 6000.0, 10};
-    result.samples[2] = {true, 2.0, 0.02, 1.0, 100.0, 0};
-    result.samples[3] = {false, 40.0, 0.4, 2.0, 6000.0, 5};
+    result.samples[0] = {true, FailureReason::NONE, 1.0, 0.01, 1.0, 100.0, 0};
+    result.samples[1] = {false, FailureReason::POSITION_TIMEOUT, 50.0, 0.5, 2.0, 6000.0, 10};
+    result.samples[2] = {true, FailureReason::NONE, 2.0, 0.02, 1.0, 100.0, 0};
+    result.samples[3] = {false, FailureReason::EXCESS_VELOCITY, 40.0, 0.4, 2.0, 6000.0, 5};
 
     compute_statistics(result);
 
     EXPECT_EQ(result.n_success, 2);
     EXPECT_NEAR(result.success_rate, 0.5, 1e-10);
+}
+
+// ----------------------------------------------------------------------------
+// FailureReason Tests
+// ----------------------------------------------------------------------------
+
+TEST(FailureReason, SingleSamplePositionTimeout) {
+    Vec6 x0;
+    x0 << 500, -3000, 500, 0, 0, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+    ApproachParams params;
+    params.u_max = 0.001;
+    params.timeout = 500.0;     // Force timeout
+
+    UncertaintyModel uncertainty;
+    uncertainty.pos_error = Vec3::Zero();
+    uncertainty.vel_error = Vec3::Zero();
+    uncertainty.thrust_mag_error = 0.0;
+    uncertainty.thrust_pointing_error = 0.0;
+
+    std::mt19937 rng(42);
+    Vec6 final_state;
+
+    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
+
+    EXPECT_FALSE(result.success);
+    EXPECT_STREQ(failure_reason_to_string(result.failure_reason), failure_reason_to_string(FailureReason::POSITION_TIMEOUT));
+    EXPECT_GT(result.final_range, params.success_range);
+}
+
+TEST(FailureReason, SingleSampleGlideslopeTrapped) {
+    Vec6 x0;
+    x0 << 0, -100, 0, 0, 0.5, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+    ApproachParams params;
+    params.success_range = 10.0;
+    params.success_velocity = 0.001;
+    params.timeout = 6000.0;
+
+    UncertaintyModel uncertainty;
+    uncertainty.pos_error = Vec3::Zero();
+    uncertainty.vel_error = Vec3::Zero();
+    uncertainty.thrust_mag_error = 0.0;
+    uncertainty.thrust_pointing_error = 0.0;
+
+    std::mt19937 rng(42);
+    Vec6 final_state;
+
+    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
+
+    EXPECT_STREQ(failure_reason_to_string(result.failure_reason), failure_reason_to_string(FailureReason::GLIDESLOPE_TRAPPED));
 }

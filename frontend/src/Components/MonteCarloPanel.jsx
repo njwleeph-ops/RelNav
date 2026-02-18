@@ -1,17 +1,40 @@
 import React, { useState } from 'react';
 import Plot from 'react-plotly.js';
 import { runMonteCarlo, createState, createPosition } from '../api';
-import { ISS_ALTITUDE, darkLayout, dark3DLayout, PLOTLY_CONFIG, COLOR } from '../constants';
+import { ISS_ALTITUDE, darkLayout, dark3DLayout, computeSymmetricRanges, PLOTLY_CONFIG, COLORS } from '../constants';
 
 function MonteCarloPanel() {
     // --- Initial state ---
-    const [x0, setX0] = useState({ x: 200, y: -500, z: 0, vx: 0, vy: 0; vz: 0 });
+    const [x0, setX0] = useState({ x: 200, y: -500, z: 0, vx: 0, vy: 0, vz: 0 });
 
     // --- Corridor Parameters ---
     const [approachAxis, setApproachAxis] = useState('vbar');
     const [corridorAngle, setCorridorAngle] = useState(0.175);
     const [glideslopeK, setGlideslopeK] = useState(0.001);
     const [minRange, setMinRange] = useState(10.0);
+
+    const AXIS_DEFAULTS = {
+        vbar: { x: 200, y: -500, z: 200, vx: 0, vy: 0, vz: 0 },
+        rbar: { x: -500, y: 200, z: 200, vx: 0, vy: 0, vz: 0 },
+        hbar: { x: 200, y: 200, z: -500, vx: 0, vy: 0, vz: 0 },
+    };
+    const AXIS_CONSTRAINT = { vbar: 'y', rbar: 'x', hbar: 'z' };
+    const constrainedKey = AXIS_CONSTRAINT[approachAxis];
+
+    const handleAxisChange = (axis) => {
+        setApproachAxis(axis);
+        setX0(AXIS_DEFAULTS[axis]);
+    };
+
+    const handleStateChange = (key, value) => {
+        const v = parseFloat(value) || 0;
+
+        if (key === constrainedKey && v > 0) {
+            setX0({ ...x0, [key]: -Math.abs(v) });
+        } else {
+            setX0({ ...x0, [key]: v });
+        }
+    };
 
     // --- LQR weights ---
     const [qPos, setQPos] = useState(10);
@@ -79,8 +102,14 @@ function MonteCarloPanel() {
 
     // --- Final position scatter plot ---
     const scatterTraces = [];
+    let scatterRanges = {};
     
     if (result?.finalStates) {
+        const allVbar = result.finalStates.map(s => s.y);
+        const allRbar = result.finalStates.map(s => s.x);
+        const allHbar = result.finalStates.map(s => s.z);
+        scatterRanges = computeSymmetricRanges({ x: allRbar, y: allVbar, z: allHbar });
+
         const success = result.finalStates.filter((_, i) =>
             result.samples[i] && result.samples[i].success
         );
@@ -126,7 +155,7 @@ function MonteCarloPanel() {
         });
         scatterTraces.push({
             x: theta.map(t => r * Math.cos(t)),
-            y: theta.map(() => 0);
+            y: theta.map(() => 0),
             z: theta.map(t => r * Math.sin(t)),
             mode: 'lines',
             showlegend: false,
@@ -183,10 +212,10 @@ function MonteCarloPanel() {
                 <h4>Initial State (LVLH)</h4>
                 <div className="input-row">
                     {['x', 'y', 'z'].map(k => (
-                        <label key={k}>
-                            {k}:
+                        <label key={k} className={k === constrainedKey ? 'constrained' : ''}>
+                            {k}{k === constrainedKey ? '≤ 0' : ''}:
                             <input type="number" value={x0[k]}
-                                onChange={e => setX0({ ...x0, [k]: parseFloat(e.target.value) || 0})}
+                                onChange={e => handleStateChange(k, e.target.value)}
                             />
                             m
                         </label>
@@ -200,7 +229,7 @@ function MonteCarloPanel() {
                                 type="number"
                                 value={x0[k]}
                                 step="0.01"
-                                onChange={e => setX0({ ...x0, [k]: parseFloat(e.target.value) || 0})}
+                                onChange={e => handleStateChange(k, e.target.value)}
                             />
                             m/s
                         </label>
@@ -211,7 +240,7 @@ function MonteCarloPanel() {
                 <div className="input-row">
                     <label>
                         Approach Axis:
-                        <select value={approachAxis} onChange={e => setApproachAxis(e.target.value)}>
+                        <select value={approachAxis} onChange={e => handleAxisChange(e.target.value)}>
                             <option value="vbar">V-bar (along-track)</option>
                             <option value="rbar">R-bar (radial)</option>
                             <option value="hbar">H-bar (cross-track)</option>
@@ -359,32 +388,30 @@ function MonteCarloPanel() {
             {result && (
                 <>
                     {/* Key metrics */}
-                    <div className="metric-row">
-                        <div className={`metric ${result.successRate > 0.9 ? 'highlight-ok' : result.successRate > 0.5 ? 'highlight-warn' : 'highlight-err'}`}>
-                            <span className="metric-label">Success Rate</span>
-                            <span className="metric-value">{(result.successRate * 100).toFixed(1)}%</span>
-                        </div>
-                        <div className="metric">
-                            <span className="metric-label">Samples</span>
-                            <span className="metric-value">{result.nSuccess} / {result.nSamples}</span>
-                        </div>
-                        <div className="metric">
-                            <span className="metric-label">Mean dv</span>
-                            <span className="metric-vaue">{result.meanDV.toFixed(3)} ± {result.stdDV.toFixed(3)} m/s</span>
-                        </div>
-                        <div className="metric">
-                            <span className="metric-label">Mean Duration</span>
-                            <span className="metric-value">{result.meanDuration.toFixed(0)} ± {result.stdDuration.toFixed(0)} s</span>
-                        </div>
-                        <div className="metric">
-                            <span className="metric-label">Mean Final Range</span>
-                            <span className="metric-value">{result.meanFinalRange.toFixed(2)} m</span>
-                        </div>
-                        <div className="metric">
-                            <span className="metric-label">Mean Saturations</span>
-                            <span className="metric-value">{result.meanSaturationCount.toFixed(1)}</span>
-                        </div>
-                    </div>
+                    <table className="metrics-table">
+                        <thead>
+                            <tr>
+                                <th>Success Rate</th>
+                                <th>Samples</th>
+                                <th>Mean dv</th>
+                                <th>Mean Duration</th>
+                                <th>Mean Final Range</th>
+                                <th>Mean Saturations</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td className={result.successRate > 0.9 ? 'val-ok' : result.successRate > 0.5 ? 'val-warn' : 'val-err'}>
+                                    {(result.successRate * 100).toFixed(1)}%
+                                </td>
+                                <td>{result.nSuccess} / {result.nSamples}</td>
+                                <td>{result.meanDV.toFixed(3)} ± {result.stdDV.toFixed(3)} m/s</td>
+                                <td>{result.meanDuration.toFixed(0)} ± {result.stdDuration.toFixed(0)} s</td>
+                                <td>{result.meanFinalRange.toFixed(2)} m</td>
+                                <td>{result.meanSaturationCount.toFixed(1)}</td>
+                            </tr>
+                        </tbody>
+                    </table>
 
                     {/* Plots */}
                     <div className="plot-grid">
@@ -393,6 +420,7 @@ function MonteCarloPanel() {
                                 data={scatterTraces}
                                 layout={dark3DLayout({
                                     title: { text: 'Final Position Scatter (LVLH)', font: { color: '#c8c8d8' } },
+                                    ...scatterRanges,
                                 })}
                                 config={PLOTLY_CONFIG}
                                 style={{ width: '100%', height: '500px' }}

@@ -97,14 +97,25 @@ MonteCarloSampleResult run_sample(
     double t = 0.0;
     bool entered_corridor = false;
 
-    int max_steps = std::min(
-        static_cast<int>(params.timeout / params.dt),
-        MAX_TRAJECTORY_POINTS - 1
-    );
+    int max_steps = static_cast<int>(params.timeout / params.dt);
+
+    double initial_range = x0.head<3>().norm();
+
+    // Glideslope trap: track consecutive steps where range 
+    // oscillates within band
+    int stall_count = 0;
+    double prev_range = initial_range;
+    int STALL_THRESHOLD = static_cast<int>(0.25 * max_steps);    // [steps]
+    constexpr double STALL_BAND = 0.5;      // [m]
+
+    // Track whether reached success_range
+    double min_range_seen = initial_range;
 
     for (int i = 0; i <= max_steps; ++i) {
         double range = x.head<3>().norm();
         double velocity = x.tail<3>().norm();
+
+        min_range_seen = std::min(min_range_seen, range);
 
         if (std::isnan(range) || std::isnan(velocity)) {
             std::cout << "NaN detected at i = " << i << std::endl;
@@ -114,12 +125,40 @@ MonteCarloSampleResult run_sample(
 
         if (range < params.success_range && velocity < params.success_velocity) {
             result.success = true;
+            result.failure_reason = FailureReason::NONE;
             result.final_range = range;
             result.final_velocity = velocity;
             result.duration = t;
             final_state = x;
             return result;
         }
+
+        // Glideslope trap check
+        if (i > 0) {
+            double range_delta = std::abs(range - prev_range);
+
+            if (range_delta < STALL_BAND && range > params.success_range * 2.0) {
+                if (i % 50 == 0) {
+                }
+
+                stall_count++;
+            } else {
+                stall_count = 0;
+            }
+
+            if (stall_count > STALL_THRESHOLD) {
+                std::cout << "STALLED AT : " << i << std::endl;
+                result.success = false;
+                result.failure_reason = FailureReason::GLIDESLOPE_TRAPPED;
+                result.final_range = range;
+                result.final_velocity = velocity;
+                result.duration = t;
+                final_state = x;
+                return result;
+            }
+        }
+
+        prev_range = range;
 
         if (i == max_steps) {
             break;
@@ -178,7 +217,49 @@ MonteCarloSampleResult run_sample(
     result.duration = t;
     final_state = x;
 
+    std::cout << "min_range_seen = " << min_range_seen << " | success_range = " << params.success_range << std::endl;
+
+    if (min_range_seen < params.success_range && result.final_velocity > params.success_velocity) {
+        result.failure_reason = FailureReason::EXCESS_VELOCITY;
+    } else {
+        result.failure_reason = FailureReason::POSITION_TIMEOUT;
+    }
+
     return result;
+}
+
+// ----------------------------------------------------------------------------
+// Percentile Helper
+// ----------------------------------------------------------------------------
+
+static PercentileStats compute_percentiles(std::vector<double>& values) {
+    PercentileStats stats;
+
+    if (values.empty()) {
+        return stats;
+    }
+
+    std::sort(values.begin(), values.end());
+    int n = static_cast<int>(values.size());
+
+    auto percentile = [&](double p) -> double {
+        double idx = p * (n - 1);
+        int lo = static_cast<int>(std::floor(idx));
+        int hi = std::min(lo + 1, n - 1);
+        double frac = idx - lo;
+
+        return values[lo] * (1.0 - frac) + values[hi] * frac;
+    };
+
+    stats.min = values.front();
+    stats.max = values.back();
+    stats.p50 = percentile(0.50);
+    stats.p75 = percentile(0.75);
+    stats.p90 = percentile(0.90);
+    stats.p95 = percentile(0.95);
+    stats.p99 = percentile(0.99);
+
+    return stats;
 }
 
 // ----------------------------------------------------------------------------
@@ -192,10 +273,25 @@ void compute_statistics(MonteCarloResult& result) {
 
     // Count successes
     result.n_success = 0;
+    result.failures = {};
 
     for (int i = 0; i < result.n_samples; ++i) {
         if (result.samples[i].success) {
             result.n_success++;
+        } else {
+            switch (result.samples[i].failure_reason) {
+                case FailureReason::POSITION_TIMEOUT:
+                    result.failures.position_timeout++;
+                    break;
+                case FailureReason::EXCESS_VELOCITY:
+                    result.failures.excess_velocity++;
+                    break;
+                case FailureReason::GLIDESLOPE_TRAPPED:
+                    result.failures.glideslope_trapped++;
+                    break;
+                default:
+                    break;
+            }
         }
     }
 
@@ -228,8 +324,22 @@ void compute_statistics(MonteCarloResult& result) {
         sum_sq_duration += std::pow(result.samples[i].duration - result.mean_duration, 2);
     }
 
-    result.std_dv = std::sqrt(sum_sq_dv / (result.n_samples - 1));
-    result.std_duration = std::sqrt(sum_sq_duration / (result.n_samples - 1));
+    if (result.n_samples > 1) {
+        result.std_dv = std::sqrt(sum_sq_dv / (result.n_samples - 1));
+        result.std_duration = std::sqrt(sum_sq_duration / (result.n_samples - 1));
+    }
+
+    // Percentiles
+    std::vector<double> dv_vals(result.n_samples);
+    std::vector<double> duration_vals(result.n_samples);
+
+    for (int i = 0; i < result.n_samples; ++i) {
+        dv_vals[i] = result.samples[i].total_dv;
+        duration_vals[i] = result.samples[i].duration;
+    }
+
+    result.dv_percentiles = compute_percentiles(dv_vals);
+    result.duration_percentiles = compute_percentiles(duration_vals);
 }
 
 // ----------------------------------------------------------------------------
@@ -247,6 +357,8 @@ MonteCarloResult run_monte_carlo(
 {
     MonteCarloResult result;
     result.n_samples = std::min(n_samples, MAX_MC_SAMPLES);
+    result.samples.resize(result.n_samples);
+    result.final_states.resize(result.n_samples);
 
     // Auto-detect thread count
     if (n_threads <= 0) {

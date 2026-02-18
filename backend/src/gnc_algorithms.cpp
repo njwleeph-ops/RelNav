@@ -251,10 +251,12 @@ ApproachResult run_approach_guidance(
     double t = 0.0;
     bool entered_corridor = false;
 
-    int max_steps = std::min(
-        static_cast<int>(params.timeout / params.dt),
-        MAX_TRAJECTORY_POINTS - 1
-    );
+    int max_steps = static_cast<int>(params.timeout / params.dt);
+
+    // Pre-allocate vectors
+    result.trajectory.points.resize(max_steps + 1);
+    result.control_history.resize(max_steps);
+    result.waypoint_history.resize(max_steps);
 
     for (int i = 0; i <= max_steps; ++i) {
         result.trajectory.points[i].t = t;
