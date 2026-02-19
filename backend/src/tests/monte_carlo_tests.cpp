@@ -270,6 +270,37 @@ TEST(RunMonteCarlo, MultipleThreadsProduceSameCount) {
     EXPECT_EQ(result_1_thread.success_rate, result_4_threads.success_rate);
 }
 
+TEST(RunMonteCarlo, StressedUncertaintiesProduceFailures) {
+    Vec6 x0;
+    x0 << 200, -500, 200, 0, 0, 0;
+
+    double n = OrbitalParams(420e3).mean_motion();
+    ApproachParams params;
+    params.u_max = 0.005;
+    params.timeout = 3000.0;
+
+    UncertaintyModel uncertainty;
+    uncertainty.pos_error = Vec3{100.0, 100.0, 100.0};
+    uncertainty.vel_error = Vec3{0.1, 0.1, 0.1};
+    uncertainty.thrust_mag_error = 0.15;
+    uncertainty.thrust_pointing_error = 0.08;
+
+    MonteCarloResult result = run_monte_carlo(x0, n, params, uncertainty, 100, 4, 42);
+
+    int total_failures = result.failures.position_timeout + result.failures.excess_velocity;
+
+    EXPECT_EQ(total_failures, result.n_samples - result.n_success);
+    EXPECT_LT(result.success_rate, 1.0);
+    
+    // Check percentiles
+    EXPECT_LE(result.dv_percentiles.min, result.dv_percentiles.p50);
+    EXPECT_LE(result.dv_percentiles.p50, result.dv_percentiles.p75);
+    EXPECT_LE(result.dv_percentiles.p75, result.dv_percentiles.p90);
+    EXPECT_LE(result.dv_percentiles.p90, result.dv_percentiles.p95);
+    EXPECT_LE(result.dv_percentiles.p95, result.dv_percentiles.p99);
+    EXPECT_LE(result.dv_percentiles.p99, result.dv_percentiles.max);
+}
+
 // ----------------------------------------------------------------------------
 // compute_statistics
 // ----------------------------------------------------------------------------
@@ -338,15 +369,15 @@ TEST(FailureReason, SingleSamplePositionTimeout) {
     EXPECT_GT(result.final_range, params.success_range);
 }
 
-TEST(FailureReason, SingleSampleGlideslopeTrapped) {
+TEST(FailureReason, SingleSampleExcessVelocity) {
     Vec6 x0;
-    x0 << 0, -100, 0, 0, 0.5, 0;
+    x0 << 0, -100, 0, 0, 1.0, 0;
 
     double n = OrbitalParams(420e3).mean_motion();
     ApproachParams params;
     params.success_range = 10.0;
-    params.success_velocity = 0.001;
-    params.timeout = 6000.0;
+    params.success_velocity = 0.0001;
+    params.timeout = 1500.0;
 
     UncertaintyModel uncertainty;
     uncertainty.pos_error = Vec3::Zero();
@@ -359,5 +390,193 @@ TEST(FailureReason, SingleSampleGlideslopeTrapped) {
 
     MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
 
-    EXPECT_STREQ(failure_reason_to_string(result.failure_reason), failure_reason_to_string(FailureReason::GLIDESLOPE_TRAPPED));
+    std::cout << "final_range = " << result.final_range << " | final_velocity = " << result.final_velocity << std::endl; 
+
+    EXPECT_STREQ(failure_reason_to_string(result.failure_reason), failure_reason_to_string(FailureReason::EXCESS_VELOCITY));
 }
+
+// ----------------------------------------------------------------------------
+// Percentile computation
+// ----------------------------------------------------------------------------
+
+TEST(Percentiles, BasiComputation) {
+    MonteCarloResult mc;
+    mc.n_samples = 100;
+    mc.samples.resize(100);
+    mc.final_states.resize(100);
+
+    for (int i = 0; i < 100; ++i) {
+        mc.samples[i].success = true;
+        mc.samples[i].failure_reason = FailureReason::NONE;
+        mc.samples[i].total_dv = static_cast<double>(i + 1);
+        mc.samples[i].duration = static_cast<double>((i + 1) * 10);
+        mc.samples[i].final_range = 1.0;
+        mc.samples[i].final_velocity = 0.01;
+        mc.samples[i].saturation_count = 0;
+        mc.final_states[i] = Vec6::Zero();
+    }
+
+    compute_statistics(mc);
+
+    EXPECT_NEAR(mc.dv_percentiles.min, 1.0, 0.01);
+    EXPECT_NEAR(mc.dv_percentiles.max, 100.0, 0.01);
+    EXPECT_NEAR(mc.dv_percentiles.p50, 50.5, 1.0);
+    EXPECT_NEAR(mc.dv_percentiles.p95, 95.5, 1.0);
+    EXPECT_NEAR(mc.dv_percentiles.p99, 99.5, 1.0);
+
+    EXPECT_NEAR(mc.duration_percentiles.min, 10.0, 0.1);
+    EXPECT_NEAR(mc.duration_percentiles.max, 1000.0, 0.1);
+    EXPECT_NEAR(mc.duration_percentiles.p50, 505.0, 10.0);
+}
+
+TEST(Percentiles, SingleSample) {
+    MonteCarloResult mc;
+    mc.n_samples = 1;
+    mc.samples.resize(1);
+    mc.final_states.resize(1);
+
+    mc.samples[0].success = true;
+    mc.samples[0].failure_reason = FailureReason::NONE;
+    mc.samples[0].total_dv = 5.0;
+    mc.samples[0].duration = 3000.0;
+    mc.samples[0].final_range = 2.0;
+    mc.samples[0].final_velocity = 0.01;
+    mc.samples[0].saturation_count = 10;
+    mc.final_states[0] = Vec6::Zero();
+
+    compute_statistics(mc);
+
+    EXPECT_NEAR(mc.dv_percentiles.min, 5.0, 1e-10);
+    EXPECT_NEAR(mc.dv_percentiles.max, 5.0, 1e-10);
+    EXPECT_NEAR(mc.dv_percentiles.p50, 5.0, 1e-10);
+    EXPECT_NEAR(mc.dv_percentiles.p99, 5.0, 1e-10);
+}
+
+// ----------------------------------------------------------------------------
+// Failure breakdown tallying
+// ----------------------------------------------------------------------------
+
+TEST(FailureBreakdown, CorrectCounts) {
+    MonteCarloResult mc;
+    mc.n_samples = 10;
+    mc.samples.resize(10);
+    mc.final_states.resize(10);
+
+    for (int i = 0; i < 10; ++i) {
+        mc.samples[i].total_dv = 5.0;
+        mc.samples[i].duration = 3000.0;
+        mc.samples[i].final_range = 2.0;
+        mc.samples[i].final_velocity = 0.01;
+        mc.samples[i].saturation_count = 0;
+        mc.final_states[i] = Vec6::Zero();
+    }
+
+    for (int i = 0; i < 5; ++i) {
+        mc.samples[i].success = true;
+        mc.samples[i].failure_reason = FailureReason::NONE;
+    }
+
+    for (int i = 5; i < 8; ++i) {
+        mc.samples[i].success = false;
+        mc.samples[i].failure_reason = FailureReason::POSITION_TIMEOUT;
+    }
+
+    mc.samples[8].success = false;
+    mc.samples[8].failure_reason = FailureReason::EXCESS_VELOCITY;
+    mc.samples[9].success = false;
+    mc.samples[9].failure_reason = FailureReason::EXCESS_VELOCITY;
+
+    compute_statistics(mc);
+
+    EXPECT_EQ(mc.n_success, 5);
+    EXPECT_NEAR(mc.success_rate, 0.5, 1e-10);
+    EXPECT_EQ(mc.failures.position_timeout, 3);
+    EXPECT_EQ(mc.failures.excess_velocity, 2);
+}
+
+// ----------------------------------------------------------------------------
+// state_from_range
+// ----------------------------------------------------------------------------
+
+TEST(StateFromRange, VbarPlacesAlongY) {
+    ApproachParams params;
+    params.corridor_params.approach_axis = Vec3{0, -1, 0};
+
+    Vec6 x0 = state_from_range(500.0, params);
+
+    EXPECT_NEAR(x0(0), 0.0, 1e-10);
+    EXPECT_NEAR(x0(1), -500.0, 1e-10);
+    EXPECT_NEAR(x0(2), 0.0, 1e-10);
+
+    // Velocity is unchanged
+    EXPECT_NEAR(x0.tail<3>().norm(), 0.0, 1e-10);
+
+    // Range is preserved
+    EXPECT_NEAR(x0.head<3>().norm(), 500.0, 1e-10);
+}
+
+TEST(StateFromRange, RbarPlacesAlongX) {
+    ApproachParams params;
+    params.corridor_params.approach_axis = Vec3{-1, 0, 0};
+
+    Vec6 x0 = state_from_range(500.0, params);
+
+    EXPECT_NEAR(x0(1), 0.0, 1e-10);
+    EXPECT_NEAR(x0(0), -500.0, 1e-10);
+    EXPECT_NEAR(x0(2), 0.0, 1e-10);
+
+    // Velocity unchanged
+    EXPECT_NEAR(x0.tail<3>().norm(), 0.0, 1e-10);
+
+    // Range preserved
+    EXPECT_NEAR(x0.head<3>().norm(), 500.0, 1e-10);
+}
+
+TEST(StateFromRange, HbarPlacesAlongZ) {
+    ApproachParams params;
+    params.corridor_params.approach_axis = Vec3{0, 0, -1};
+
+    Vec6 x0 = state_from_range(500.0, params);
+
+    EXPECT_NEAR(x0(0), 0.0, 1e-10);
+    EXPECT_NEAR(x0(2), -500.0, 1e-10);
+    EXPECT_NEAR(x0(1), 0.0, 1e-10);
+
+    // Velocity unchanged
+    EXPECT_NEAR(x0.tail<3>().norm(), 0.0, 1e-10);
+
+    // Range preserved
+    EXPECT_NEAR(x0.head<3>().norm(), 500.0, 1e-10);
+}
+
+// ----------------------------------------------------------------------------
+// Grid construction
+// ----------------------------------------------------------------------------
+
+TEST(Envelope, GridDimensionsMatchConfig) {
+    ApproachParams params;
+    params.corridor_params.approach_axis = Vec3{0, -1, 0};
+
+    EnvelopeConfig config;
+    config.range_steps = 5;
+    config.u_max_steps = 4;
+    config.samples_per_point = 10;
+
+    double n = OrbitalParams(420e3).mean_motion();
+
+    PerformancEnvelope envelope = compute_performance_envelope(
+        params, UncertaintyModel(), config, n
+    );
+
+    EXPECT_EQ(envelope.range_values.size(), 5);
+    EXPECT_EQ(envelope.u_max_values.size(), 4);
+    EXPECT_EQ(envelope.grid.size(), 5);
+
+    for (auto& row : envelope.grid) {
+        EXPECT_EQ(row.size(), 4);
+    }
+}
+
+
+
+

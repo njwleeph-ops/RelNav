@@ -101,13 +101,6 @@ MonteCarloSampleResult run_sample(
 
     double initial_range = x0.head<3>().norm();
 
-    // Glideslope trap: track consecutive steps where range 
-    // oscillates within band
-    int stall_count = 0;
-    double prev_range = initial_range;
-    int STALL_THRESHOLD = static_cast<int>(0.25 * max_steps);    // [steps]
-    constexpr double STALL_BAND = 0.5;      // [m]
-
     // Track whether reached success_range
     double min_range_seen = initial_range;
 
@@ -132,33 +125,6 @@ MonteCarloSampleResult run_sample(
             final_state = x;
             return result;
         }
-
-        // Glideslope trap check
-        if (i > 0) {
-            double range_delta = std::abs(range - prev_range);
-
-            if (range_delta < STALL_BAND && range > params.success_range * 2.0) {
-                if (i % 50 == 0) {
-                }
-
-                stall_count++;
-            } else {
-                stall_count = 0;
-            }
-
-            if (stall_count > STALL_THRESHOLD) {
-                std::cout << "STALLED AT : " << i << std::endl;
-                result.success = false;
-                result.failure_reason = FailureReason::GLIDESLOPE_TRAPPED;
-                result.final_range = range;
-                result.final_velocity = velocity;
-                result.duration = t;
-                final_state = x;
-                return result;
-            }
-        }
-
-        prev_range = range;
 
         if (i == max_steps) {
             break;
@@ -285,9 +251,6 @@ void compute_statistics(MonteCarloResult& result) {
                     break;
                 case FailureReason::EXCESS_VELOCITY:
                     result.failures.excess_velocity++;
-                    break;
-                case FailureReason::GLIDESLOPE_TRAPPED:
-                    result.failures.glideslope_trapped++;
                     break;
                 default:
                     break;
@@ -427,4 +390,183 @@ MonteCarloResult run_monte_carlo(
     return result;
 }
 
+// ----------------------------------------------------------------------------
+// Performance Envelope
+// ----------------------------------------------------------------------------
+
+/**
+ * @brief Dominant failure reason helper
+ */
+static FailureReason dominant_failure_reason(const FailureBreakdown& failures) {
+    if (max_count == 0) {
+        return FailureReason::NONE;
+    }
+
+    int max_count = failures.position_timeout
+    FailureReason dominant = FailureReason::POSITION_TIMEOUT;
+
+    if (failures.excess_velocity > max_count) {
+        max_count = failures.excess_velocity;
+        dominant = FailureReason::EXCESS_VELOCITY;
+    }
+
+    return dominant;
+}
+
+Vec6 state_from_range(double range, const ApproachParams& params) {
+    Vec6 x0 = Vec6::Zero();
+    Vec3 axis = params.corridor_params.approach_axis.normalized();
+
+    x0.head<3>() = -range * axis;
+
+    return x0;
+}
+
+EnvelopePoint run_envelope_point(
+    double range, 
+    double u_max,
+    double n,
+    const ApproachParams& params,
+    const UncertaintyModel& uncertainty,
+    int n_samples,
+    unsigned int seed) 
+{
+    ApproachParams new_params = params;
+    new_params.u_max = u_max;
+    Vec6 x0 = state_from_range(range, new_params);
+
+    MonteCarloResult mc = run_monte_carlo(x0, n, params, uncertainty, n_samples, 1, seed);
+
+    // Condense into EnvelopePoint
+    EnvelopePoint pt;
+    pt.range = range;
+    pt.u_max = u_max;
+    pt.success_rate = mc.success_rate;
+    pt.n_success = mc.n_success;
+    pt.n_samples = mc.n_samples;
+    pt.mean_dv = mc.mean_dv;
+    pt.p95_dv = mc.dv_percentiles.p95;
+    pt.p99_dv = mc.dv_percentiles.p99;
+    pt.mean_duration = mc.mean_duration;
+    pt.p95_duration = mc.duration_percentiles.p95;
+    pt.failures = mc.failures;
+    pt.dominant_failure = dominant_failure_mode(mc.failures):
+
+    return pt;
+}
+
+PerformanceEnvelope compute_performance_envelope(
+    const ApproachParams& params,
+    const UncertaintyModel& uncertainty,
+    const EnvelopeConfig& config,
+    double n,
+    int n_threads)
+{
+    auto start_time = std::chrono::steady_clock::now();
+
+    PerformanceEnvelope envelope;
+    envelope.config = config;
+    envelope.params = params;
+    envelope.uncertainty = uncertainty;
+
+    Vec3 axis = params.corridor_params.approach_axis.normalized();
+
+    if (std::abs(axis[1] > 0.9)) {
+        envelope.approach_axis = "vbar";
+    } else if (std::abs(axis[0] > 0.9)) {
+        envelope.approach_axis = "rbar";
+    } else {
+        envelope.approach_axis = "hbar";
+    }
+
+    // Build axes
+    envelope.range_vals.resize(config.range_steps);
+    envelope.u_max_vals.resize(config.u_max_steps);
+
+    for (int i = 0; i < config.range_steps; ++i) {
+        double range_frac = static_cast<double>(i) / std::max(config.range_steps - 1, 1);
+        envelope.range_values[i] = config.range_min + range_frac * (config.range_max - config.range_min);
+    }
+
+    // Max thrust log-spaced 
+    double log_min = std::log10(config.u_max_min);
+    double log_max = std::log10(config.u_max_max);
+
+    for (int j = 0; j < config.u_max_steps; ++j) {
+        double u_max_frac = static_cast<double>(j) / std::max(config.u_max_steps - 1, 1);
+        envelope.u_max_vals[j] = std::pow(10.0, log_min + u_max_frac * (log_max - log_min));
+    }
+
+    // Allocate grid
+    envelope.grid.resize(config.range_steps);
+
+    for (int i = 0; i < config.range_steps; ++i) {
+        envelope.grid[i].resize(config.u_max_steps);
+    }
+
+    // Thread count
+    if (n_threads == 0) {
+        n_threads = static_cast<int>(std::thread::hardware_concurrency());
+
+        if (n_threads == 0) {
+            n_threads = 4;
+        }
+    }
+
+    // Flatten grid into work queue
+    int total_cells = config.range_steps * config.u_max_steps;
+    std::mutex queue_mutex;
+    int next_cell = 0;
+
+    auto worker [&]() {
+        while (true) {
+            int cell_idx;
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex);
+
+                if (next_cell >= total_cells) {
+                    break;
+                }
+
+                cell_idx = next_cell++;
+            }
+
+            int i = cell_idx / config.u_max_steps;
+            int j = cell_idx % config.u_max_steps;
+
+            unsigned int cell_seed = config.seed + static_cast<unsigned int>(cell_idx * 997);
+
+            EnvelopePoint pt = run_envelope_point(
+                envelope.range_vals[i],
+                envelope.u_max_vals[j],
+                n,
+                params,
+                uncertainty,
+                config.samples_per_point,
+                cell_seed
+            );
+
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex);
+                envelope.grid[i][j] = pt;
+            }
+        }
+    };
+
+    // Launch threads
+    std::vector<std::thread> threads;
+
+    for (int t = 0; t < n_threads; ++t) {
+        threads.emplace_back(worker);
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    auto end_time = std::chrono::steady_clock::now();
+    envelope.total_compute_time = std::chrono::duration<double>(end_time - start_time);
+
+    return envelope;
+} 
 }
