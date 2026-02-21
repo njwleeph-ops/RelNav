@@ -132,11 +132,6 @@ TEST(RunSample, SucceedsFromNominal) {
 
     EXPECT_TRUE(result.success);
     EXPECT_LT(result.final_range, params.success_range);
-
-    std::cout << guidance_result.success << " | " << guidance_result.final_range 
-              << " | " << guidance_result.trajectory.count << std::endl;
-
-    std::cout << "failure reason is " << failure_reason_to_string(result.failure_reason) << std::endl;
 }
 
 TEST(RunSample, TracksStatistics) {
@@ -390,7 +385,7 @@ TEST(FailureReason, SingleSampleExcessVelocity) {
 
     MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
 
-    std::cout << "final_range = " << result.final_range << " | final_velocity = " << result.final_velocity << std::endl; 
+    //std::cout << "final_range = " << result.final_range << " | final_velocity = " << result.final_velocity << std::endl; 
 
     EXPECT_STREQ(failure_reason_to_string(result.failure_reason), failure_reason_to_string(FailureReason::EXCESS_VELOCITY));
 }
@@ -564,18 +559,126 @@ TEST(Envelope, GridDimensionsMatchConfig) {
 
     double n = OrbitalParams(420e3).mean_motion();
 
-    PerformancEnvelope envelope = compute_performance_envelope(
+    PerformanceEnvelope envelope = compute_performance_envelope(
         params, UncertaintyModel(), config, n
     );
 
-    EXPECT_EQ(envelope.range_values.size(), 5);
-    EXPECT_EQ(envelope.u_max_values.size(), 4);
+    EXPECT_EQ(envelope.range_vals.size(), 5);
+    EXPECT_EQ(envelope.u_max_vals.size(), 4);
     EXPECT_EQ(envelope.grid.size(), 5);
 
     for (auto& row : envelope.grid) {
         EXPECT_EQ(row.size(), 4);
     }
 }
+
+TEST(Envelope, UmaxIsLogSpaced) {
+    ApproachParams params;
+    params.corridor_params.approach_axis = Vec3{0, -1, 0};
+
+    EnvelopeConfig config;
+    config.range_steps = 2;
+    config.u_max_steps = 3;
+    config.u_max_min = 0.001;
+    config.u_max_max = 0.1;
+    config.samples_per_point = 10;
+
+    double n = OrbitalParams(420e3).mean_motion();
+
+    PerformanceEnvelope envelope = compute_performance_envelope(
+        params, UncertaintyModel(), config, n
+    );
+
+    double ratio_01 = envelope.u_max_vals[1] / envelope.u_max_vals[0];
+    double ratio_12 = envelope.u_max_vals[2] / envelope.u_max_vals[1];
+
+    EXPECT_NEAR(ratio_01, ratio_12, 1e-6);
+
+    // Check endpoints
+    EXPECT_NEAR(envelope.u_max_vals.front(), config.u_max_min, 1e-10);
+    EXPECT_NEAR(envelope.u_max_vals.back(), config.u_max_max, 1e-10);
+}
+
+TEST(Envelope, SuccessRateDegradesWithRange) {
+    ApproachParams params;
+    params.corridor_params.approach_axis = Vec3{0, -1, 0};
+    params.Q = Mat6::Identity();
+    params.Q.block<3, 3>(0, 0) *= 10.0;
+    params.Q.block<3, 3>(3, 3) *= 50.0;
+    params.R = Mat3::Identity();
+    params.timeout = 4000.0;
+
+    EnvelopeConfig config;
+    config.range_min = 200.0;
+    config.range_max = 3000.0;
+    config.range_steps = 5;
+
+    // Fixed u_max slice
+    config.u_max_min = 0.005;
+    config.u_max_max = 0.005;
+    config.u_max_steps = 1;
+
+    config.samples_per_point = 50;
+    config.seed = 42;
+
+    UncertaintyModel uncertainty;
+    uncertainty.pos_error = Vec3{20.0, 20.0, 20.0};
+    uncertainty.vel_error = Vec3{0.05, 0.05, 0.05};
+    uncertainty.thrust_mag_error = 0.05;
+    
+    double n = OrbitalParams(420e3).mean_motion();
+
+    PerformanceEnvelope envelope = compute_performance_envelope(
+        params, uncertainty, config, n
+    );
+
+    double close_rate = envelope.grid[0][0].success_rate;
+    double far_rate = envelope.grid[config.range_steps - 1][0].success_rate;
+
+    EXPECT_GE(close_rate, far_rate);
+}
+
+TEST(Envelope, SuccessRateImprovesWithThrust) {
+    ApproachParams params;
+    params.corridor_params.approach_axis = Vec3{0, -1, 0};
+    params.Q = Mat6::Identity();
+    params.Q.block<3, 3>(0, 0) *= 10.0;
+    params.Q.block<3, 3>(3, 3) *= 50.0;
+    params.R = Mat3::Identity();
+    params.timeout = 4000.0;
+
+    EnvelopeConfig config;
+
+    // Constant range slice
+    config.range_min = 1000.0;
+    config.range_max = 1000.0;
+    config.range_steps = 1;
+
+    config.u_max_min = 0.001;
+    config.u_max_max = 0.03;
+    config.u_max_steps = 5;
+    config.samples_per_point = 50;
+    config.seed = 42;
+
+    UncertaintyModel uncertainty;
+    uncertainty.pos_error = Vec3{20.0, 20.0, 20.0};
+    uncertainty.vel_error = Vec3{0.05, 0.05, 0.05};
+    uncertainty.thrust_mag_error = 0.05;
+    
+    double n = OrbitalParams(420e3).mean_motion();
+
+    PerformanceEnvelope envelope = compute_performance_envelope(
+        params, uncertainty, config, n
+    );
+
+    double low_thrust_rate = envelope.grid[0][0].success_rate;
+    double high_thrust_rate = envelope.grid[0][config.u_max_steps - 1].success_rate;
+
+    EXPECT_GE(high_thrust_rate, low_thrust_rate);
+}
+
+
+
 
 
 

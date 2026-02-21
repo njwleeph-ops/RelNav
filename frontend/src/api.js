@@ -70,6 +70,51 @@ export async function runMonteCarlo(params) {
     return res.json();
 }
 
+/**
+ * POST /api/envelope
+ */
+export async function startEnvelope(params) {
+    const res = await fetch(`${API_URL}/envelope`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+    });
+
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `/envelope failed (${res.status})`);
+    }
+
+    return res.json();
+}
+
+/**
+ * GET /api/envelope/:id
+ */
+export async function getEnvelopeStatus(jobId) {
+    const res = await fetch(`${API_URL}/envelope/${jobId}`);
+
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `/envelope/${jobId} failed (${res.status})`);
+    }
+
+    return res.json();
+}
+
+/**
+ * DELETE /api/envelope/:id
+ */
+export async function deleteEnvelope(jobId) {
+    const res = await fetch(`${API_URL}/envelope/${jobId}`, { method: 'DELETE' });
+
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `DELETE envelope/${jobId} failed`);
+    }
+
+    return res.json();
+}
 
 /**
  * POST /api/propagate
@@ -88,33 +133,12 @@ export async function propagateTrajectory(params) {
     return res.json();
 }
 
-
-/**
- * POST /api/validate
- */
-export async function validatePropagators(params) {
-    const res = await fetch(`${API_URL}/validate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-    });
-
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.error || `Validation failed (${res.status})`);
-    }
-
-    return res.json();
-}
-
-
 /**
  * Helper: create state object
  */
 export function createState(x, y, z, vx = 0, vy = 0, vz = 0) {
     return { x, y, z, vx, vy, vz };
 }
-
 
 /**
  * Helper: create position object

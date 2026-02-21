@@ -2,8 +2,8 @@ import React from 'react';
 
 const TABS = [
     { id: 'guidance', label: 'Approach Guidance' },
-    { id: 'validation', label: 'Validation' },
     { id: 'montecarlo', label: 'Monte Carlo' },
+    { id: 'envelope', label: 'Performance Envelope' },
 ];
 
 function TabNav({ activeTab, onTabChange }) {

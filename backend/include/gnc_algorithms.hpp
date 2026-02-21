@@ -27,9 +27,10 @@ constexpr int MAX_WAYPOINTS = 20;
 // Glideslope Guidance
 // ----------------------------------------------------------------------------
 
+/// Guidance structs
 /**
  * @brief Glideslope guidance parameters
- * 
+ *
  * Enforces: |v_approach| <= k * range
  */
 struct GlideslopeParams {
@@ -49,6 +50,8 @@ struct GlideslopeCheck {
     double v_max;           // Maximum allowed velocity [m/s]
     double approach_angle;  // Angle of approach [rad]
 };
+
+/// Guidance function declarations
 
 /**
  * @brief Compute maximum allowed approach velocity
@@ -99,6 +102,118 @@ GlideslopeCheck check_glideslope_violation(const Vec6& x, const GlideslopeParams
  */
 Vec3 apply_glideslope_constraint(const Vec3& u, const Vec6& x, double dt, const GlideslopeParams& params);
 
+// ----------------------------------------------------------------------------
+// Navigation EKF Filtering
+// ----------------------------------------------------------------------------
+
+/// Navigation structs
+
+struct SensorModel {
+    double range_noise;         // [m]
+    double bearing_noise;       // [rad]
+    double update_rate;         // [Hz]
+    double max_range;           // dropout above [m]
+    double min_range;           // saturation below [m]
+};
+
+struct Measurement {
+    Vec3 z;                     // [range, azimuth, elevation]
+    bool valid;         
+};
+
+struct NavFilterConfig {
+    Mat6 Q_process;             // process noise 
+    Mat3 R_meas;                // measurement noise
+    Mat6 P0;                    // initial covariance
+};
+
+struct NavConfig {
+    SensorModel sensor;
+    NavFilterConfig filter;
+};
+
+struct NavFilterState {
+    Vec6 x_hat;
+    Mat6 P;
+};
+
+struct NavDiagnostics {
+    double max_pos_error;
+    double final_pos_error;
+    int measurement_count;
+    int dropout_count;
+};
+
+/// EKF navigation function declarations
+
+/**
+ * @brief Propagate estimate and covariance
+ * @param state State and covariance to propagate
+ * @param u_applied Thrust applied
+ * @param n Mean motion
+ * @param dt Timestep size
+ * @param Q_process Process noise
+ * @return Propagated state estimate and covariance estimate
+ */
+NavFilterState ekf_predict(
+    const NavFilterState& state,
+    const Vec3& u_applied,
+    double n,
+    double dt,
+    const Mat6& Q_process
+);
+
+/**
+ * @brief Fuse measurement into estimate via Kalman gain
+ * @param predicted Estimated state and covariance after propagation
+ * @param meas Measurements [range, azimuth, elevation]
+ * @param R_meas Measurement noise
+ * @return Estimated state with measurement 
+ */
+NavFilterState ekf_update(
+    const NavFilterState& predicted,
+    const Measurement& meas,
+    const Mat3& R_meas
+);
+
+/**
+ * @brief Nonlinear measurement model h(x)
+ * @param x State vector [position, velocity]
+ * @return h(x) = [range, azimuth, elevation]
+ */
+Vec3 measurement_function(const Vec6& x);
+
+/**
+ * @brief Jacobian evaluated at x
+ * @param x State vector
+ */
+Mat36 measurement_jacobian(const Vec6& x);
+
+/**
+ * @brief Simulate sensor reading from true state
+ * @param x_true True state vector at a given point of time
+ * @param sensor Sensor noises to apply to true state
+ * @param rng Randomizer
+ */
+Measurement generate_measurement(
+    const Vec6& x_true,
+    const SensorModel& sensor,
+    std::mt19937& rng
+);
+
+/**
+ * @brief Build initial filter state from true state and initial covariance
+ * @param x_true True state vector
+ * @param P0 Initial covariance
+ * @param rng Randomizer
+ */
+NavFilterState initialize_filter(
+    const Vec6& x_true,
+    const Mat6& P0,
+    std::mt19937& rng
+);
+
+NavConfig default_nav_config();
 
 // ----------------------------------------------------------------------------
 // LQR Optimal Control
@@ -158,7 +273,7 @@ Vec3 compute_lqr_control(
 Vec3 saturate_control(const Vec3& u, double u_max);
 
 // ----------------------------------------------------------------------------
-// Approach Guidance
+// Full Approach GNC controller
 // ----------------------------------------------------------------------------
 
 /**
@@ -194,7 +309,9 @@ struct ApproachResult {
 ApproachResult run_approach_guidance(
     const Vec6& x0,
     double n,
-    const ApproachParams& params
+    const ApproachParams& params,
+    const NavConfig* nav = nullptr,
+    std::mt19937* rng = nullptr
 );
 
 }

@@ -494,6 +494,108 @@ body {
 }
 
 /* ============================================================================
+   Performance Envelope
+   ============================================================================ */
+
+.progress-container {
+    margin: 16px 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.progress-bar {
+    flex: 1;
+    height: 8px;
+    background: #1a1a2e;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid #252540;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #00d4ff, #00ff88);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+.progress-label {
+    font-size: 12px;
+    color: #8888a0;
+    white-space: nowrap;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.compute-time {
+    font-size: 12px;
+    color: #00ff88;
+    margin: 8px 0;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.metric-toggle {
+    display: flex;
+    gap: 4px;
+    margin: 12px 0;
+}
+
+.toggle-btn {
+    padding: 6px 16px;
+    border: 1px solid #252540;
+    border-radius: 4px;
+    background: #12122a;
+    color: #8888a0;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    transition: all 0.2s;
+}
+
+.toggle-btn:hover {
+    border-color: #00d4ff;
+    color: #c8c8d8;
+}
+
+.toggle-btn.active {
+    background: #1a1a3a;
+    border-color: #00d4ff;
+    color: #00d4ff;
+}
+
+.failure-legend {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    margin: 8px 0;
+    flex-wrap: wrap;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #8888a0;
+    font-family: 'JetBrains Mono', monospace;
+}
+
+.legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    display: inline-block;
+}
+
+.heatmap-hint {
+    text-align: center;
+    font-size: 11px;
+    color: #555580;
+    margin-top: 4px;
+    font-style: italic;
+}
+
+/* ============================================================================
    Responsive
    ============================================================================ */
 

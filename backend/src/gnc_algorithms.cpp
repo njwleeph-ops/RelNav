@@ -142,6 +142,181 @@ Vec3 apply_glideslope_constraint (
 
     return u_lateral + u_approach_clamped;
 }
+// ----------------------------------------------------------------------------
+// Navigation EKF Filtering
+// ----------------------------------------------------------------------------
+
+NavFilterState ekf_predict(
+    const NavFilterState& state,
+    const Vec3& u_applied,
+    double n,
+    double dt,
+    const Mat6& Q_process)
+{
+    Mat6 Phi = cw_state_transition_matrix(n, dt);
+    Mat63 B = cw_control_matrix();
+
+    NavFilterState predicted;
+    predicted.x_hat = Phi * state.x_hat + B * (u_applied * dt);
+    predicted.P = Phi * state.P * Phi.transpose() + Q_process;
+
+    return predicted;
+}
+
+NavFilterState ekf_update(
+    const NavFilterState& predicted,
+    const Measurement& meas,
+    const Mat3& R_meas)
+{
+    if (!meas.valid) {
+        return predicted;
+    }
+
+    Mat36 H = measurement_jacobian(predicted.x_hat);
+    Vec3 z_predicted = measurement_function(predicted.x_hat);
+    Vec3 residual = meas.z - z_predicted;
+
+    // Wrap azimuthal and elevation residuals to [-pi, pi]
+    residual(1) = std::atan2(std::sin(residual(1)), std::cos(residual(1)));
+    residual(2) = std::atan2(std::sin(residual(2)), std::cos(residual(2)));
+
+    Mat3 S = H * predicted.P * H.transpose() + R_meas;
+    Mat63 K = predicted.P * H.transpose() * S.inverse();
+
+    NavFilterState updated;
+    updated.x_hat = predicted.x_hat + K * residual;
+    updated.P = (Mat6::Identity() - K * H) * predicted.P;
+
+    return updated;
+}
+
+Vec3 measurement_function(const Vec6& x) {
+    double px = x(0);
+    double py = x(1);
+    double pz = x(2);
+
+    double range = std::sqrt(px*px + py*py + pz*pz);
+    double azimuth = std::atan2(py, px);
+    double elevation = std::atan2(pz, std::sqrt(px*px + py*py));
+
+    return Vec3{range, azimuth, elevation};
+}
+
+Mat36 measurement_jacobian(const Vec6& x) {
+    double px = x(0);
+    double py = x(1);
+    double pz = x(2);
+
+    double r = std::sqrt(px*px + py*py + pz*pz);
+    double rxy = std::sqrt(px*px + py*py);
+
+    Mat36 H = Mat36::Zero();
+
+    // d(range)/d(pos)
+    H(0, 0) = px / r;
+    H(0, 1) = py / r;
+    H(0, 2) = pz / r;
+
+    // d(azimuth)/d(pos) - atan2(py, px)
+    double rxy2 = px*px + py*py;
+    H(1, 0) = -py / rxy2;
+    H(1, 1) = px / rxy2;
+
+    // d(elevation)/d(pos) - atan2(pz, rxy)
+    double r2 = r * r;
+    H(2, 0) = -px * pz / (r2 * rxy);
+    H(2, 1) = -py * pz / (r2 * rxy);
+    H(2, 2) = rxy / r2;
+
+    // Columns 3-5 = 0
+
+    return H;
+}
+
+Measurement generate_measurement(
+    const Vec6& x_true,
+    const SensorModel& sensor,
+    std::mt19937& rng)
+{
+    double range = x_true.head<3>().norm();
+
+    Measurement meas;
+    meas.valid = (range <= sensor.max_range) && (range >= sensor.min_range);
+
+    if (!meas.valid) {
+        meas.z = Vec3::Zero();
+        return meas;
+    }
+
+    Vec3 z_true = measurement_function(x_true);
+
+    std::normal_distribution<double> range_dist(0.0, sensor.range_noise);
+    std::normal_distribution<double> bearing_dist(0.0, sensor.bearing_noise);
+
+    meas.z(0) = z_true(0) + range_dist(rng);
+    meas.z(1) = z_true(1) + bearing_dist(rng);
+    meas.z(2) = z_true(2) + bearing_dist(rng);
+
+    return meas;
+}
+
+NavFilterState initialize_filter(
+    const Vec6& x_true,
+    const Mat6& P0,
+    std::mt19937& rng)
+{
+    std::normal_distribution<double> dist(0.0, 1.0);
+    Vec6 noise;
+
+    for (int i = 0; i < 6; ++i) {
+        noise(i) = dist(rng);
+    }
+
+    // Cholesky decomposition: P0 = L * L.transpose
+    Eigen::LLT<Mat6> llt(P0);
+    Mat6 L = llt.matrixL();
+
+    NavFilterState state;
+    state.x_hat = x_true + L * noise;
+    state.P = P0;
+
+    return state;
+}
+
+NavConfig default_nav_config() {
+    NavConfig config;
+
+    config.sensor.range_noise = 1.0;
+    config.sensor.bearing_noise = 0.005;
+    config.sensor.update_rate = 1.0;
+    config.sensor.max_range = 2000.0;
+    config.sensor.min_range = 2.0;
+
+    config.filter.R_meas = Mat3::Zero();
+    config.filter.R_meas(0, 0) = 1.0;
+    config.filter.R_meas(1, 1) = 0.000025;
+    config.filter.R_meas(2, 2) = 0.000025;
+
+    config.filter.Q_process = Mat6::Zero();
+    config.filter.Q_process(0, 0) = 0.001;
+    config.filter.Q_process(1, 1) = 0.001;
+    config.filter.Q_process(2, 2) = 0.001;
+    config.filter.Q_process(3, 3) = 0.0001;
+    config.filter.Q_process(4, 4) = 0.0001;
+    config.filter.Q_process(5, 5) = 0.0001;
+
+    config.filter.P0 = Mat6::Zero();
+    config.filter.P0(0, 0) = 100.0;
+    config.filter.P0(1, 1) = 100.0;
+    config.filter.P0(2, 2) = 100.0;
+    config.filter.P0(3, 3) = 0.01;
+    config.filter.P0(4, 4) = 0.01;
+    config.filter.P0(5, 5) = 0.01;
+
+    return config;
+}
+
+
 
 // ----------------------------------------------------------------------------
 // LQR Optimal Control
@@ -233,9 +408,11 @@ Vec3 saturate_control(const Vec3& u, double u_max) {
 // ----------------------------------------------------------------------------
 
 ApproachResult run_approach_guidance(
-    const Vec6& x0,
+    const Vec6& x0_true,
     double n,
-    const ApproachParams& params)
+    const ApproachParams& params,
+    const NavConfig* nav,
+    std::mt19937* rng)
 {
     ApproachResult result;
     result.num_points = 0;
@@ -247,9 +424,19 @@ ApproachResult run_approach_guidance(
     // Precompute LQR gain
     Mat36 K = compute_lqr_gain(n, params.Q, params.R);
 
-    Vec6 x = x0;
+    Vec6 x_true = x0_true;
     double t = 0.0;
     bool entered_corridor = false;
+
+    // Initialize nav filter
+    NavFilterState nav_state;
+    double time_since_measurement = 0.0;
+    int measurement_count = 0;
+    int dropout_count = 0;
+
+    if (nav && rng) {
+        nav_state = initialize_filter(x0_true, nav->filter.P0, *rng);
+    }
 
     int max_steps = static_cast<int>(params.timeout / params.dt);
 
@@ -260,14 +447,12 @@ ApproachResult run_approach_guidance(
 
     for (int i = 0; i <= max_steps; ++i) {
         result.trajectory.points[i].t = t;
-        result.trajectory.points[i].x = x;
+        result.trajectory.points[i].x = x_true;
 
-        double range = x.head<3>().norm();
-        double velocity = x.tail<3>().norm();
+        double range = x_true.head<3>().norm();
+        double velocity = x_true.tail<3>().norm();
 
         if (std::isnan(range) || std::isnan(velocity)) {
-            std::cout << "NaN detected at i = " << i << std::endl;
-            std::cout << "x = " << x.transpose() << std::endl;
             break;
         }
 
@@ -285,8 +470,34 @@ ApproachResult run_approach_guidance(
             break;
         }
 
+        Vec6 x_control = x_true;
+
+        if (nav && rng) {
+            double meas_interval = 1.0 / nav->sensor.update_rate;
+            time_since_measruement += params.dt;
+
+            if (time_since_measurement >= meas_interval){
+                Measurement meas = generate_measurement(
+                    x_true, nav->sensor, *rng
+                );
+
+                if (meas.valid) {
+                    nav_state = ekf_update(
+                        nav_state, meas, nav->filter.R_meas
+                    );
+                    measurement_count++;
+                } else {
+                    dropout_count++;
+                }
+
+                time_since_measurement = 0.0;
+            }
+
+            x_for_control = nav_state.x_hat;
+        }
+
         bool inside = is_inside_corridor(
-            x.head<3>(), 
+            x_for_control.head<3>(), 
             params.corridor_params.corridor_angle, 
             params.corridor_params.approach_axis
         );
@@ -299,7 +510,7 @@ ApproachResult run_approach_guidance(
         Vec3 waypoint = entered_corridor ? 
         Vec3::Zero() :
         compute_edge_waypoint(
-            x.head<3>(), 
+            x_for_control.head<3>(), 
             params.corridor_params.corridor_angle, 
             params.corridor_params.approach_axis
         );
@@ -310,10 +521,12 @@ ApproachResult run_approach_guidance(
         x_ref.head<3>() = waypoint;
 
         // Compute LQR control thrust
-        Vec3 u = compute_lqr_control(x, K, x_ref);
+        Vec3 u = compute_lqr_control(x_for_control, K, x_ref);
 
         // Apply glideslope constraints
-        u = apply_glideslope_constraint(u, x, params.dt, params.corridor_params);
+        u = apply_glideslope_constraint(
+            u, x_for_control, params.dt, params.corridor_params
+        );
 
         // Saturate 
         Vec3 u_saturated = saturate_control(u, params.u_max);

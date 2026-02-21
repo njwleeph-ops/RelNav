@@ -183,7 +183,7 @@ MonteCarloSampleResult run_sample(
     result.duration = t;
     final_state = x;
 
-    std::cout << "min_range_seen = " << min_range_seen << " | success_range = " << params.success_range << std::endl;
+    //std::cout << "min_range_seen = " << min_range_seen << " | success_range = " << params.success_range << std::endl;
 
     if (min_range_seen < params.success_range && result.final_velocity > params.success_velocity) {
         result.failure_reason = FailureReason::EXCESS_VELOCITY;
@@ -394,15 +394,12 @@ MonteCarloResult run_monte_carlo(
 // Performance Envelope
 // ----------------------------------------------------------------------------
 
-/**
- * @brief Dominant failure reason helper
- */
-static FailureReason dominant_failure_reason(const FailureBreakdown& failures) {
-    if (max_count == 0) {
+FailureReason dominant_failure_reason(const FailureBreakdown& failures) {
+    if (failures.position_timeout == 0 && failures.excess_velocity == 0) {
         return FailureReason::NONE;
     }
 
-    int max_count = failures.position_timeout
+    int max_count = failures.position_timeout;
     FailureReason dominant = FailureReason::POSITION_TIMEOUT;
 
     if (failures.excess_velocity > max_count) {
@@ -417,7 +414,7 @@ Vec6 state_from_range(double range, const ApproachParams& params) {
     Vec6 x0 = Vec6::Zero();
     Vec3 axis = params.corridor_params.approach_axis.normalized();
 
-    x0.head<3>() = -range * axis;
+    x0.head<3>() = range * axis;
 
     return x0;
 }
@@ -450,7 +447,7 @@ EnvelopePoint run_envelope_point(
     pt.mean_duration = mc.mean_duration;
     pt.p95_duration = mc.duration_percentiles.p95;
     pt.failures = mc.failures;
-    pt.dominant_failure = dominant_failure_mode(mc.failures):
+    pt.dominant_failure = dominant_failure_reason(mc.failures);
 
     return pt;
 }
@@ -471,9 +468,9 @@ PerformanceEnvelope compute_performance_envelope(
 
     Vec3 axis = params.corridor_params.approach_axis.normalized();
 
-    if (std::abs(axis[1] > 0.9)) {
+    if (std::abs(axis[1]) > 0.9) {
         envelope.approach_axis = "vbar";
-    } else if (std::abs(axis[0] > 0.9)) {
+    } else if (std::abs(axis[0]) > 0.9) {
         envelope.approach_axis = "rbar";
     } else {
         envelope.approach_axis = "hbar";
@@ -485,7 +482,7 @@ PerformanceEnvelope compute_performance_envelope(
 
     for (int i = 0; i < config.range_steps; ++i) {
         double range_frac = static_cast<double>(i) / std::max(config.range_steps - 1, 1);
-        envelope.range_values[i] = config.range_min + range_frac * (config.range_max - config.range_min);
+        envelope.range_vals[i] = config.range_min + range_frac * (config.range_max - config.range_min);
     }
 
     // Max thrust log-spaced 
@@ -518,7 +515,7 @@ PerformanceEnvelope compute_performance_envelope(
     std::mutex queue_mutex;
     int next_cell = 0;
 
-    auto worker [&]() {
+    auto worker = [&]() {
         while (true) {
             int cell_idx;
             {
@@ -565,7 +562,7 @@ PerformanceEnvelope compute_performance_envelope(
     }
 
     auto end_time = std::chrono::steady_clock::now();
-    envelope.total_compute_time = std::chrono::duration<double>(end_time - start_time);
+    envelope.total_compute_time = std::chrono::duration<double>(end_time - start_time).count();
 
     return envelope;
 } 

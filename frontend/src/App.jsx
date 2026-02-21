@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { getHealth, getOrbit } from './api';
 import {
     Header,
     TabNav,
     GuidancePanel,
-    ValidationPanel,
-    MonteCarloPanel
+    MonteCarloPanel,
+    EnvelopePanel,
 } from './Components';
 import './App.css';
 
@@ -13,6 +13,12 @@ function App() {
     const [activeTab, setActiveTab] = useState('propagator');
     const [orbitInfo, setOrbitInfo] = useState(null);
     const [backendOk, setBackendOk] = useState(false);
+
+    const [guidanceResult, setGuidanceResult] = useState(null);
+    const [mcResult, setMcResult] = useState(null);
+    const [envelopeResult, setEnvelopeResult] = useState(null);
+
+    const [mcOverrides, setMcOverrides] = useState(null);
 
     useEffect(() => {
         getHealth()
@@ -24,24 +30,44 @@ function App() {
             .catch(() => { });
     }, []);
 
-    const renderPanel = () => {
-        switch (activeTab) {
-            case 'guidance': return <GuidancePanel />;
-            case 'validation': return <ValidationPanel />;
-            case 'montecarlo': return <MonteCarloPanel />;
-            default: return <GuidancePanel />;
-        }
-    };
+    const handleDrillInto = useCallback((params) => {
+        setMcOverrides(params);
+        setActiveTab('montecarlo');
+    }, []);
+
+    const handleMcOverridesConsumed = useCallback(() => {
+        setMcOverrides(null);
+    }, []);
 
     return (
         <div className="app">
-            <Header orbitInfo={orbitInfo} backendOk={backendOk}/>
-            <TabNav activeTab={activeTab} onTabChange={setActiveTab} />
+            <Header orbitInfo={orbitInfo} backendOk={backendOk} />
+            <TabNav activetab={activeTab} onTabChange={setActiveTab} />
             <main className="main-content">
-                {renderPanel()}
+                <div style={{ display: activeTab === 'guidance' ? 'block' : 'none' }}>
+                    <GuidancePanel
+                        savedResult={guidanceResult}
+                        onResult={setGuidanceResult}
+                    />
+                </div>
+                <div style={{ display: activeTab === 'montecarlo' ? 'block' :'none' }}>
+                    <MonteCarloPanel
+                        savedResult={mcResult}
+                        onResult={setMcResult}
+                        overrides={mcOverrides}
+                        onOverridesConsumed={handleMcOverridesConsumed}
+                    />
+                </div>
+                <div style={{ display: activeTab === 'envelope' ? 'block' : 'none' }}>
+                    <EnvelopePanel
+                        savedResult={envelopeResult}
+                        onResult={setEnvelopeResult}
+                        onDrillInto={handleDrillInto}
+                    />
+                </div>
             </main>
             <footer className="footer">
-                <p>RelNav-MC v2.0 | C++ Backend + React Frontend</p>
+                <p>RelNav-MC v2.1</p>
             </footer>
         </div>
     );

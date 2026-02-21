@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Plot from 'react-plotly.js';
 import { runMonteCarlo, createState, createPosition } from '../api';
 import { ISS_ALTITUDE, darkLayout, dark3DLayout, computeSymmetricRanges, PLOTLY_CONFIG, COLORS } from '../constants';
 
-function MonteCarloPanel() {
+function MonteCarloPanel({ overrides, onOverridesConsumed }) {
     // --- Initial state ---
     const [x0, setX0] = useState({ x: 200, y: -500, z: 0, vx: 0, vy: 0, vz: 0 });
 
@@ -25,6 +25,27 @@ function MonteCarloPanel() {
         setApproachAxis(axis);
         setX0(AXIS_DEFAULTS[axis]);
     };
+
+    useEffect(() => {
+        if (!overrides) return;
+
+        const { range, uMax: drillUMax, approachAxis: drillAxis } = overrides;
+
+        // Override approach axis and construct initial state
+        if (drillAxis) {
+            setApproachAxis(drillAxis);
+            const axisMap = {
+                vbar: { x: 0, y: -range, z: 0, vx: 0, vy: 0, vz: 0 },
+                rbar: { x: -range, y: 0, z: 0, vx: 0, vy: 0, vz: 0 },
+                hbar: { x: 0, y: 0, z: -range, vx: 0, vy: 0, vz: 0 },
+            };
+            setX0(axisMap[drillAxis] || axisMap.vbar);
+        }
+
+        if (drillUMax) setUMax(drillUMax);
+
+        if (onOverridesConsumed) onOverridesConsumed();
+    }, [overrides, onOverridesConsumed]);
 
     const handleStateChange = (key, value) => {
         const v = parseFloat(value) || 0;

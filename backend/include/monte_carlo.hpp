@@ -265,6 +265,11 @@ MonteCarloResult run_monte_carlo(
 void compute_statistics(MonteCarloResult& result);
 
 /**
+ * @brief Dominant reason for falure helper
+ */
+FailureReason dominant_failure_reason(const FailureBreakdown& failures);
+
+/**
  * @brief Construct initial state from range and approach axis 
  * pulled from approach parameters
  */
