@@ -8,6 +8,7 @@ set(CMAKE_BUILD_TYPE Release)
 find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
 find_package(GTest REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 
 include_directories(
@@ -22,6 +23,7 @@ add_executable(server
     src/cw_dynamics.cpp
     src/monte_carlo.cpp
     src/gnc_algorithms.cpp
+    src/config.cpp
 )
 
 add_executable(guidance_testing 
@@ -37,6 +39,12 @@ add_executable(monte_carlo_testing
     src/cw_dynamics.cpp
 )
 
+add_executable(nav_testing
+    src/tests/navigation_tests.cpp
+    src/gnc_algorithms.cpp
+    src/cw_dynamics.cpp
+)
+
 target_include_directories(server PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
@@ -44,6 +52,7 @@ target_include_directories(server PRIVATE
 target_link_libraries(server PRIVATE
     Threads::Threads
     Eigen3::Eigen
+    yaml-cpp::yaml-cpp
 )
 
 target_include_directories(guidance_testing PRIVATE 
@@ -54,6 +63,10 @@ target_include_directories(monte_carlo_testing PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+target_include_directories(nav_testing PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 target_link_libraries(guidance_testing PRIVATE 
     GTest::gtest
     GTest::gtest_main
@@ -61,6 +74,12 @@ target_link_libraries(guidance_testing PRIVATE
 )
 
 target_link_libraries(monte_carlo_testing PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    Eigen3::Eigen
+)
+
+target_link_libraries(nav_testing PRIVATE
     GTest::gtest
     GTest::gtest_main
     Eigen3::Eigen
