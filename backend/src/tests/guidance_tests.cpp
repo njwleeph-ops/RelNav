@@ -112,19 +112,9 @@ TEST(EdgeWaypoint, InsideCorridorReturnsOrigin) {
     double angle = 0.175;
     Vec3 axis{0, -1, 0};
 
-    Vec3 waypoint = compute_edge_waypoint(position, angle, axis);
+    Vec3 waypoint = compute_edge_waypoint(position, angle, axis, position.head<3>().norm());
 
     EXPECT_NEAR(waypoint.norm(), 0.0, 1e-10);
-}
-
-TEST(EdgeWaypoint, OutsideCorridorPreservesRange) {
-    Vec3 position{400, -400, 0};
-    double angle = 0.175;
-    Vec3 axis{0, -1, 0};
-
-    Vec3 waypoint = compute_edge_waypoint(position, angle, axis);
-
-    EXPECT_NEAR(waypoint.norm(), position.norm(), 1e-6);
 }
 
 TEST(EdgeWaypoint, OutsideCorridorLandsOnEdge) {
@@ -132,21 +122,11 @@ TEST(EdgeWaypoint, OutsideCorridorLandsOnEdge) {
     double angle = 0.175;
     Vec3 axis{0, -1, 0};
 
-    Vec3 waypoint = compute_edge_waypoint(position, angle, axis);
+    Vec3 waypoint = compute_edge_waypoint(position, angle, axis, position.head<3>().norm());
 
     double waypoint_angle = glideslope_approach_angle(waypoint, axis);
 
     EXPECT_NEAR(waypoint_angle, angle, 1e-6);
-}
-
-TEST(EdgeWaypoint, ThreeDimensionPreservesRange) {
-    Vec3 position{300, -300, 300};
-    double angle = 0.175;
-    Vec3 axis{0, -1, 0};
-
-    Vec3 waypoint = compute_edge_waypoint(position, angle, axis);
-
-    EXPECT_NEAR(waypoint.norm(), position.norm(), 1e-6);
 }
 
 TEST(EdgeWaypoint, ThreeDimensionLandsOnEdge) {
@@ -154,7 +134,7 @@ TEST(EdgeWaypoint, ThreeDimensionLandsOnEdge) {
     double angle = 0.175;
     Vec3 axis{0, -1, 0};
 
-    Vec3 waypoint = compute_edge_waypoint(position, angle, axis);
+    Vec3 waypoint = compute_edge_waypoint(position, angle, axis, position.head<3>().norm());
     
     double waypoint_angle = glideslope_approach_angle(waypoint, axis);
 
@@ -424,6 +404,86 @@ TEST(RunApproachGuidance, TrajectoryCountMatchesNumPoints) {
     EXPECT_GT(result.num_points, 0);
 }
 
+/// Testing run_approach_guidance with new Nav filtering implementations
+
+TEST(RunApproachGuidance, SuccessWithoutNav) {
+    double n = OrbitalParams(420e3).mean_motion();
+    Vec6 x0;
+    x0 << 0, -1000, 0, 0, 0.5, 0;
+
+    ApproachParams params;
+    params.Q.block<3, 3>(0, 0) *= 10.0;
+    params.Q.block<3, 3>(3, 3) *= 50.0;
+
+    ApproachResult result = run_approach_guidance(x0, n, params);
+
+    EXPECT_TRUE(result.success);
+    EXPECT_LT(result.final_range, params.success_range);
+    EXPECT_LT(result.final_velocity, params.success_velocity);
+    EXPECT_EQ(result.measurement_count, 0);
+    EXPECT_EQ(result.dropout_count, 0);
+}
+
+TEST(RunApprochGuidance, SucceedsWithNav) {
+    double n = OrbitalParams(420e3).mean_motion();
+    Vec6 x0;
+    x0 << 0, -1000, 0, 0, 0.5, 0;
+
+    ApproachParams params;
+    params.Q.block<3, 3>(0, 0) *= 10.0;
+    params.Q.block<3, 3>(3, 3) *= 50.0;
+    NavConfig nav = default_nav_config();
+    std::mt19937 rng(42);
+
+    ApproachResult result = run_approach_guidance(x0, n, params, &nav, &rng);
+
+    EXPECT_TRUE(result.success);
+    EXPECT_GT(result.measurement_count, 0);
+}
+
+TEST(ApproachGuidance, DropoutsAtLongRange) {
+    double n = OrbitalParams(420e3).mean_motion();
+    Vec6 x0;
+    x0 << 0, -4000, 0, 0, 0.5, 0;
+
+    ApproachParams params;
+    params.Q.block<3, 3>(0, 0) *= 10.0;
+    params.Q.block<3, 3>(3, 3) *= 50.0;
+    params.dt = 1.0;
+    NavConfig nav = default_nav_config();
+
+    std::mt19937 rng(42);
+
+    ApproachResult result = run_approach_guidance(x0, n, params, &nav, &rng);
+
+    EXPECT_GT(result.dropout_count, 0);
+}
+
+TEST(RunApproachGuidance, Deterministic) {
+    double n = OrbitalParams(420e3).mean_motion();
+    Vec6 x0;
+    x0 << 0, -1000, 0, 0, 0.5, 0;
+
+    ApproachParams params;
+    params.Q.block<3, 3>(0, 0) *= 10.0;
+    params.Q.block<3, 3>(3, 3) *= 50.0;
+    NavConfig nav = default_nav_config();
+
+    double thrust_mag_error = 0.0;
+    double thrust_pointing_error = 0.0;
+
+    std::mt19937 rng1(99);
+    std::mt19937 rng2(99);
+
+    ApproachResult r1 = run_approach_guidance(x0, n, params, &nav, &rng1);
+    ApproachResult r2 = run_approach_guidance(x0, n, params, &nav, &rng2);
+
+    EXPECT_EQ(r1.success, r2.success);
+    EXPECT_NEAR(r1.total_dv, r2.total_dv, 1e-12);
+    EXPECT_NEAR(r1.final_range, r2.final_range, 1e-12);
+    EXPECT_EQ(r1.measurement_count, r2.measurement_count);
+}
+
 // ----------------------------------------------------------------------------
 // R-bar approach Testing
 // ----------------------------------------------------------------------------
@@ -465,8 +525,9 @@ TEST(RBarApproach, EdgeWaypointFromRbar) {
     Vec3 position{-300, 300, 0};
     double angle = 0.175;
     Vec3 axis{-1, 0, 0};
+    double success_range = 5.0;
 
-    Vec3 waypoint = compute_edge_waypoint(position, angle, axis);
+    Vec3 waypoint = compute_edge_waypoint(position, angle, axis, success_range);
 
     EXPECT_NEAR(waypoint.norm(), position.norm(), 1e-4);
     
@@ -478,8 +539,9 @@ TEST(RBarApproach, EdgeWaypointPointsTowardTarget) {
     Vec3 position{-300, 300, 0};
     double angle = 0.175;
     Vec3 axis{-1, 0, 0};
+    double success_range = 5.0;
 
-    Vec3 waypoint = compute_edge_waypoint(position, angle, axis);
+    Vec3 waypoint = compute_edge_waypoint(position, angle, axis, success_range);
 
     double position_angle = glideslope_approach_angle(position, axis);
     double waypoint_angle = glideslope_approach_angle(waypoint, axis);

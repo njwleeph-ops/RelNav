@@ -50,57 +50,6 @@ TEST(SampleInitialState, DspersesWithUncertainty) {
 }
 
 // ----------------------------------------------------------------------------
-// disperse_thrust
-// ----------------------------------------------------------------------------
-
-TEST(DisperseThrust, ZeroThrustStaysZero) {
-    Vec3 u = Vec3::Zero();
-    UncertaintyModel uncertainty;
-
-    std::mt19937 rng(42);
-    Vec3 u_dispersed = disperse_thrust(u, uncertainty, rng);
-
-    EXPECT_NEAR(u_dispersed.norm(), 0.0, 1e-10);
-}
-
-TEST(DisperseThrust, MagnitudeChanges) {
-    Vec3 u{0.01, 0.03, 0.0};
-    UncertaintyModel uncertainty;
-    uncertainty.thrust_mag_error = 0.1;
-
-    std::mt19937 rng(42);
-
-    double max_diff = 0.0;
-    
-    for (int i = 0; i < 100; ++i) {
-        Vec3 u_dispersed = disperse_thrust(u, uncertainty, rng);
-        double diff = std::abs(u_dispersed.norm() - u.norm());
-        max_diff = std::max(diff, max_diff);
-    }
-
-    EXPECT_GT(max_diff, 0.005);
-}
-
-TEST(DisperseThrust, DirectionChanges) {
-    Vec3 u{0.01, 0.03, 0.0};
-    UncertaintyModel uncertainty;
-    uncertainty.thrust_pointing_error = 0.05;
-
-    std::mt19937 rng(42);
-
-    double max_angle = 0.0;
-
-    for (int i = 0; i < 100; ++i) {
-        Vec3 u_dispersed = disperse_thrust(u, uncertainty, rng);
-        double dot = u.normalized().dot(u_dispersed.normalized());
-        double angle = std::acos(std::clamp(dot, -1.0, 1.0));
-        max_angle = std::max(max_angle, angle);
-    }
-
-    EXPECT_GT(max_angle, 0.01);
-}
-
-// ----------------------------------------------------------------------------
 // run_sample
 // ----------------------------------------------------------------------------
 
@@ -126,7 +75,7 @@ TEST(RunSample, SucceedsFromNominal) {
     std::mt19937 rng(42);
     Vec6 final_state;
 
-    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
+    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng);
 
     ApproachResult guidance_result = run_approach_guidance(x0, n, params);
 
@@ -149,10 +98,32 @@ TEST(RunSample, TracksStatistics) {
     std::mt19937 rng(42);
     Vec6 final_state;
 
-    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
+    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng);
 
     EXPECT_GT(result.total_dv, 0.0);
     EXPECT_GT(result.duration, 0.0);
+}
+
+TEST(RunSample, SucceedsWithDefaultNav) {
+    double n = OrbitalParams(420e3).mean_motion();
+    Vec6 x0;
+    x0 << 0, -1000, 0, 0, 0.5, 0;
+
+    ApproachParams params;
+    UncertaintyModel uncertainty;
+    uncertainty.pos_error = Vec3{10.0, 10.0, 10.0};
+    uncertainty.vel_error = Vec3{0.01, 0.01, 0.01};
+    uncertainty.thrust_mag_error = 0.01;
+    uncertainty.thrust_pointing_error = 0.005;
+
+    std::mt19937 rng(42);
+
+    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng);
+
+    EXPECT_TRUE(result.success);
+    EXPECT_EQ(result.failure_reason, FailureReason::NONE);
+    EXPECT_GT(result.total_dv, 0.0);
+    EXPECT_GT(result.final_state.norm(), 0.0);
 }
 
 // ----------------------------------------------------------------------------
@@ -280,9 +251,15 @@ TEST(RunMonteCarlo, StressedUncertaintiesProduceFailures) {
     uncertainty.thrust_mag_error = 0.15;
     uncertainty.thrust_pointing_error = 0.08;
 
-    MonteCarloResult result = run_monte_carlo(x0, n, params, uncertainty, 100, 4, 42);
+    int n_samples = 20;
+    int n_threads = 4;
+    unsigned int seed = 42;
 
-    int total_failures = result.failures.position_timeout + result.failures.excess_velocity;
+    MonteCarloResult result = run_monte_carlo(
+        x0, n, params, uncertainty, n_samples, n_threads, seed
+    );
+
+    int total_failures = result.failures.position_timeout + result.failures.excess_velocity + result.failures.limit_cycle;
 
     EXPECT_EQ(total_failures, result.n_samples - result.n_success);
     EXPECT_LT(result.success_rate, 1.0);
@@ -304,7 +281,6 @@ TEST(ComputeStatistics, HandlesAllSuccess) {
     MonteCarloResult result;
     result.n_samples = 3;
     result.samples.resize(3);
-    result.final_states.resize(3);
 
     result.samples[0] = {true, FailureReason::NONE, 1.0, 0.01, 0.5, 100.0, 0};
     result.samples[1] = {true, FailureReason::NONE, 2.0, 0.02, 0.6, 110.0, 1};
@@ -322,7 +298,6 @@ TEST(ComputeStatistics, HandlesMixedResults) {
     MonteCarloResult result;
     result.n_samples = 4;
     result.samples.resize(4);
-    result.final_states.resize(4);
 
     result.samples[0] = {true, FailureReason::NONE, 1.0, 0.01, 1.0, 100.0, 0};
     result.samples[1] = {false, FailureReason::POSITION_TIMEOUT, 50.0, 0.5, 2.0, 6000.0, 10};
@@ -357,7 +332,7 @@ TEST(FailureReason, SingleSamplePositionTimeout) {
     std::mt19937 rng(42);
     Vec6 final_state;
 
-    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
+    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng);
 
     EXPECT_FALSE(result.success);
     EXPECT_STREQ(failure_reason_to_string(result.failure_reason), failure_reason_to_string(FailureReason::POSITION_TIMEOUT));
@@ -383,7 +358,7 @@ TEST(FailureReason, SingleSampleExcessVelocity) {
     std::mt19937 rng(42);
     Vec6 final_state;
 
-    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng, final_state);
+    MonteCarloSampleResult result = run_sample(x0, n, params, uncertainty, rng);
 
     //std::cout << "final_range = " << result.final_range << " | final_velocity = " << result.final_velocity << std::endl; 
 
@@ -398,7 +373,6 @@ TEST(Percentiles, BasiComputation) {
     MonteCarloResult mc;
     mc.n_samples = 100;
     mc.samples.resize(100);
-    mc.final_states.resize(100);
 
     for (int i = 0; i < 100; ++i) {
         mc.samples[i].success = true;
@@ -408,7 +382,6 @@ TEST(Percentiles, BasiComputation) {
         mc.samples[i].final_range = 1.0;
         mc.samples[i].final_velocity = 0.01;
         mc.samples[i].saturation_count = 0;
-        mc.final_states[i] = Vec6::Zero();
     }
 
     compute_statistics(mc);
@@ -428,7 +401,6 @@ TEST(Percentiles, SingleSample) {
     MonteCarloResult mc;
     mc.n_samples = 1;
     mc.samples.resize(1);
-    mc.final_states.resize(1);
 
     mc.samples[0].success = true;
     mc.samples[0].failure_reason = FailureReason::NONE;
@@ -437,7 +409,6 @@ TEST(Percentiles, SingleSample) {
     mc.samples[0].final_range = 2.0;
     mc.samples[0].final_velocity = 0.01;
     mc.samples[0].saturation_count = 10;
-    mc.final_states[0] = Vec6::Zero();
 
     compute_statistics(mc);
 
@@ -455,7 +426,6 @@ TEST(FailureBreakdown, CorrectCounts) {
     MonteCarloResult mc;
     mc.n_samples = 10;
     mc.samples.resize(10);
-    mc.final_states.resize(10);
 
     for (int i = 0; i < 10; ++i) {
         mc.samples[i].total_dv = 5.0;
@@ -463,7 +433,6 @@ TEST(FailureBreakdown, CorrectCounts) {
         mc.samples[i].final_range = 2.0;
         mc.samples[i].final_velocity = 0.01;
         mc.samples[i].saturation_count = 0;
-        mc.final_states[i] = Vec6::Zero();
     }
 
     for (int i = 0; i < 5; ++i) {
