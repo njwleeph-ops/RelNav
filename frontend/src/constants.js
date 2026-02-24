@@ -3,100 +3,127 @@
  * @brief Shared constants, Plotly theme, and ISS orbital defaults
  */
 
-// --------------------------------------------------------------
-// ISS Defaults
-// --------------------------------------------------------------
+// Plot colors — muted, professional
+export const COLORS = {
+    trajectory: '#1a56db',
+    success: '#16a34a',
+    failure: '#dc2626',
+    target: '#000000',
+    cone: 'rgba(100, 120, 180, 0.12)',
+    coneLine: 'rgba(100, 120, 180, 0.4)',
+    amber: '#d97706',
+    grid: '#cccccc',
+    successSphere: 'rgba(22, 163, 74, 0.3)',
+};
 
-export const ISS_ALTITUDE = 420e3;
-export const ISS_PERIOD = 5569.4;
+// Plotly config — no watermark, minimal toolbar
+export const PLOTLY_CONFIG = {
+    displaylogo: false,
+    modeBarButtonsToRemove: ['sendDataToCloud'],
+    responsive: true,
+};
 
-// --------------------------------------------------------------
-// Plotly dark theme
-// --------------------------------------------------------------
-
-const GRID = '#252540';
-const ZERO = '#3a3a5c';
-const TEXT = '#c8c8d8';
-const SUBTLE = '#8888a0';
-
-export function darkLayout(overrides = {}) {
-    const base = {
-        paper_bgcolor: '#0e0e1a',
-        plot_bgcolor: '#0e0e1a',
-        font: { color: TEXT, family: 'JetBrains Mono, monospace', size: 11 },
-        margin: { t: 40, b: 50, l: 60, r: 20 },
-        showlegend: true,
-        legend: { font: { color: SUBTLE, size: 10 },  bgcolor: 'rgba(0,0,0,0)' },
-    };
-
+// Base layout for 2D plots
+export function layout2D(overrides = {}) {
     return {
-        ...base,
+        font: { family: 'Times New Roman, serif', size: 12, color: '#222' },
+        paper_bgcolor: '#ffffff',
+        plot_bgcolor: '#ffffff',
+        margin: { t: 40, r: 20, b: 50, l: 60 },
+        xaxis: {
+            gridcolor: COLORS.grid,
+            zerolinecolor: '#999',
+            zerolinewidth: 1,
+            ...(overrides.xaxis || {}),
+        },
+        yaxis: {
+            gridcolor: COLORS.grid,
+            zerolinecolor: '#999',
+            zerolinewidth: 1,
+            ...(overrides.yaxis || {}),
+        },
         ...overrides,
-        xaxis: { color: SUBTLE, gridcolor: GRID, zerolinecolor: ZERO, ...(overrides.xaxis || {}) },
-        yaxis: { color: SUBTLE, gridcolor: GRID, zerolinecolor: ZERO, ...(overrides.yaxis || {}) },
     };
 }
 
-export function dark3DLayout(overrides = {}) {
-    const axisBase = {
-        color: SUBTLE,
-        gridcolor: GRID,
-        zerolinecolor: ZERO,
-        zerolinewidth: 2,
-        backgroundcolor: '#0a0a16',
-        showbackground: true,
-        showspikes: false,
-    };
-
+// Base layout for 3D plots — equal axes, target at origin
+export function layout3D(overrides = {}) {
     return {
-        paper_bgcolor: '#0e0e1a',
-        font: { color: TEXT, family: 'JetBrains Mono, monospace', size: 11 },
-        margin: { t: 40, b: 10, l: 10, r: 10 },
-        showlegend: true,
-        legend: { font: { color: SUBTLE, size: 10 }, bgcolor: 'rgba(0,0,0,0)' },
+        font: { family: 'Times New Roman, serif', size: 11, color: '#222' },
+        paper_bgcolor: '#ffffff',
+        margin: { t: 30, r: 10, b: 10, l: 10 },
         scene: {
-            xaxis: { ...axisBase, title: 'V-bar [m]', ...(overrides.xaxis || {}) },
-            yaxis: { ...axisBase, title: 'R-bar [m]', ...(overrides.yaxis || {}) },
-            zaxis: { ...axisBase, title: 'H-bar [m]', ...(overrides.zaxis || {}) },
-            bgcolor: '#0e0e1a',
-            camera: overrides.camera || { eye: { x: 1.5, y: 1.5, z: 1.0 } },
-            aspectmode: 'cube',
+            bgcolor: '#ffffff',
+            xaxis: {
+                title: 'R-bar [m]',
+                gridcolor: COLORS.grid,
+                zerolinecolor: '#999',
+                ...(overrides.scene?.xaxis || {}),
+            },
+            yaxis: {
+                title: 'V-bar [m]',
+                gridcolor: COLORS.grid,
+                zerolinecolor: '#999',
+                ...(overrides.scene?.yaxis || {}),
+            },
+            zaxis: {
+                title: 'H-bar [m]',
+                gridcolor: COLORS.grid,
+                zerolinecolor: '#999',
+                ...(overrides.scene?.zaxis || {}),
+            },
+            aspectmode: 'data',
             ...(overrides.scene || {}),
         },
         ...overrides,
     };
 }
 
-export function computeSymmetricRanges(coords, padding = 0.15) {
-    const { x, y, z } = coords;
-    const maxAbs = Math.max(
-        ...x.map(Math.abs),
-        ...y.map(Math.abs),
-        ...z.map(Math.abs),
-        1
-    );
-    const bound = maxAbs * (1 + padding);
-    const range = [-bound, bound];
-
-    return {
-        xaxis: { range },
-        yaxis: { range },
-        zaxis: { range },
-    };
+// Determine which state component to lock negative based on approach axis
+export function getAxisConstraint(approachAxis) {
+    if (!approachAxis) return null;
+    const ax = approachAxis;
+    if (Math.abs(ax[1]) > 0.9) return 'y';   // V-bar
+    if (Math.abs(ax[0]) > 0.9) return 'x';   // R-bar
+    if (Math.abs(ax[2]) > 0.9) return 'z';   // H-bar
+    return null;
 }
 
-export const PLOTLY_CONFIG = { responsive: true, displayModeBar: false };
+// Get axis label from config approach_axis vector
+export function getAxisLabel(approachAxis) {
+    if (!approachAxis) return 'Unknown';
+    if (Math.abs(approachAxis[1]) > 0.9) return 'V-bar';
+    if (Math.abs(approachAxis[0]) > 0.9) return 'R-bar';
+    if (Math.abs(approachAxis[2]) > 0.9) return 'H-bar';
+    return 'Custom';
+}
 
-// --------------------------------------------------------------
-// Color Palette
-// --------------------------------------------------------------
+// Default initial states per approach axis
+export function getDefaultState(approachAxis) {
+    if (!approachAxis) return { x: 0, y: -500, z: 0, vx: 0, vy: 0.5, vz: 0 };
+    if (Math.abs(approachAxis[1]) > 0.9) return { x: 0, y: -500, z: 0, vx: 0, vy: 0.5, vz: 0 };
+    if (Math.abs(approachAxis[0]) > 0.9) return { x: -500, y: 0, z: 0, vx: 0.5, vy: 0, vz: 0 };
+    if (Math.abs(approachAxis[2]) > 0.9) return { x: 0, y: 0, z: -500, vx: 0, vy: 0, vz: 0.5 };
+    return { x: 0, y: -1000, z: 0, vx: 0, vy: 0.5, vz: 0 };
+}
 
-export const COLORS = {
-    cyan: '#00d4ff',
-    magenta: '#ff3d8b',
-    green: '#00ff88',
-    amber: '#ffaa00',
-    red: '#ff4444',
-    white: '#e0e0f0',
-    dim: '#555580',
-};
+// Compute symmetric axis ranges for 3D plots, ensuring origin is visible
+export function computeSymmetricRanges(points) {
+    if (!points || points.length === 0) return {};
+
+    let maxAbs = 0;
+    for (const pt of points) {
+        maxAbs = Math.max(maxAbs, Math.abs(pt.x || 0), Math.abs(pt.y || 0), Math.abs(pt.z || 0));
+    }
+
+    const pad = maxAbs * 0.1 + 1;
+    const r = maxAbs + pad;
+
+    return {
+        scene: {
+            xaxis: { range: [-r, r] },
+            yaxis: { range: [-r, r] },
+            zaxis: { range: [-r, r] },
+        },
+    };
+}

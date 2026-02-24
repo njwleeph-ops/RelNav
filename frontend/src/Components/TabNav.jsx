@@ -1,7 +1,7 @@
 import React from 'react';
 
 const TABS = [
-    { id: 'guidance', label: 'Approach Guidance' },
+    { id: 'guidance', label: 'Single-Approach' },
     { id: 'montecarlo', label: 'Monte Carlo' },
     { id: 'envelope', label: 'Performance Envelope' },
 ];

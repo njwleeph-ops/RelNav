@@ -4,7 +4,6 @@
 
 const API_URL = 'http://localhost:8080/api';
 
-
 /**
  * GET /api/health
  */
@@ -19,11 +18,38 @@ export async function getHealth() {
     return res.json();
 }
 
+/**
+ * GET /api/config
+ */
+export async function getConfig() {
+    const res = await fetch(`${API_URL}/config`);
+
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || `Failed to fetch config (${res.status})`);
+    }
+
+    return res.json();
+}
+
+/**
+ * POST /api/config/reload
+ */
+export async function reloadConfig() {
+    const res = await fetch(`${API_URL}/config/reload`, 
+        { method: 'POST' ,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+    });
+
+    if (!res.ok) throw new Error(`Reload failed: ${res.status}`);
+    return res.json();
+}
 
 /**
  * GET /api/orbit
  */
-export async function getOrbit(altitude = 420e3) {
+export async function getOrbitInfo(altitude) {
     const res = await fetch(`${API_URL}/orbit?altitude=${altitude}`);
 
     if (!res.ok) { 
@@ -37,11 +63,11 @@ export async function getOrbit(altitude = 420e3) {
 /**
  * POST /api/approach-guidance
  */
-export async function runApproachGuidance(params) {
+export async function runApproachGuidance(initialState) {
     const res = await fetch(`${API_URL}/approach-guidance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
+        body: JSON.stringify({ initialState })
     });
 
     if (!res.ok) {
@@ -55,11 +81,18 @@ export async function runApproachGuidance(params) {
 /**
  * POST /api/monte-carlo
  */
-export async function runMonteCarlo(params) {
+export async function runMonteCarlo(initialState, nSamples, posError, velError) {
     const res = await fetch(`${API_URL}/monte-carlo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
+        body: JSON.stringify({
+            initialState,
+            nSamples,
+            uncertainty: {
+                posError: posError,
+                velError: velError
+            }
+        })
     });
 
     if (!res.ok) {
@@ -73,11 +106,17 @@ export async function runMonteCarlo(params) {
 /**
  * POST /api/envelope
  */
-export async function startEnvelope(params) {
+export async function startEnvelope(posError, velError, sweep) {
     const res = await fetch(`${API_URL}/envelope`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
+        body: JSON.stringify({
+            uncertainty: {
+                posError: posError,
+                velError: velError
+            },
+            ...sweep
+        })
     });
 
     if (!res.ok) {
@@ -113,23 +152,6 @@ export async function deleteEnvelope(jobId) {
         throw new Error(err.error || `DELETE envelope/${jobId} failed`);
     }
 
-    return res.json();
-}
-
-/**
- * POST /api/propagate
- */
-export async function propagateTrajectory(params) {
-    const res = await fetch(`${API_URL}/propagate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params)
-    });
-
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.error || `Propagation failed (${res.status})`);
-    }
     return res.json();
 }
 

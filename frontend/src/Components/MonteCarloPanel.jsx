@@ -1,119 +1,33 @@
 import React, { useState, useEffect } from 'react';
 import Plot from 'react-plotly.js';
-import { runMonteCarlo, createState, createPosition } from '../api';
-import { ISS_ALTITUDE, darkLayout, dark3DLayout, computeSymmetricRanges, PLOTLY_CONFIG, COLORS } from '../constants';
+import { runMonteCarlo } from '../api';
+import { COLORS, PLOTLY_CONFIG, layout3D, layout2D, getAxisConstraint, getDefaultState, computeSymmetricRanges } from '../constants';
+import StateInput from './StateInput';
 
-function MonteCarloPanel({ overrides, onOverridesConsumed }) {
-    // --- Initial state ---
-    const [x0, setX0] = useState({ x: 200, y: -500, z: 0, vx: 0, vy: 0, vz: 0 });
-
-    // --- Corridor Parameters ---
-    const [approachAxis, setApproachAxis] = useState('vbar');
-    const [corridorAngle, setCorridorAngle] = useState(0.175);
-    const [glideslopeK, setGlideslopeK] = useState(0.001);
-    const [minRange, setMinRange] = useState(10.0);
-
-    const AXIS_DEFAULTS = {
-        vbar: { x: 200, y: -500, z: 200, vx: 0, vy: 0, vz: 0 },
-        rbar: { x: -500, y: 200, z: 200, vx: 0, vy: 0, vz: 0 },
-        hbar: { x: 200, y: 200, z: -500, vx: 0, vy: 0, vz: 0 },
-    };
-    const AXIS_CONSTRAINT = { vbar: 'y', rbar: 'x', hbar: 'z' };
-    const constrainedKey = AXIS_CONSTRAINT[approachAxis];
-
-    const handleAxisChange = (axis) => {
-        setApproachAxis(axis);
-        setX0(AXIS_DEFAULTS[axis]);
-    };
-
-    useEffect(() => {
-        if (!overrides) return;
-
-        const { range, uMax: drillUMax, approachAxis: drillAxis } = overrides;
-
-        // Override approach axis and construct initial state
-        if (drillAxis) {
-            setApproachAxis(drillAxis);
-            const axisMap = {
-                vbar: { x: 0, y: -range, z: 0, vx: 0, vy: 0, vz: 0 },
-                rbar: { x: -range, y: 0, z: 0, vx: 0, vy: 0, vz: 0 },
-                hbar: { x: 0, y: 0, z: -range, vx: 0, vy: 0, vz: 0 },
-            };
-            setX0(axisMap[drillAxis] || axisMap.vbar);
-        }
-
-        if (drillUMax) setUMax(drillUMax);
-
-        if (onOverridesConsumed) onOverridesConsumed();
-    }, [overrides, onOverridesConsumed]);
-
-    const handleStateChange = (key, value) => {
-        const v = parseFloat(value) || 0;
-
-        if (key === constrainedKey && v > 0) {
-            setX0({ ...x0, [key]: -Math.abs(v) });
-        } else {
-            setX0({ ...x0, [key]: v });
-        }
-    };
-
-    // --- LQR weights ---
-    const [qPos, setQPos] = useState(10);
-    const [qVel, setQVel] = useState(50);
-    const [R, setR] = useState(1.0);
-    const [uMax, setUMax] = useState(0.01);
-
-    // --- Simulation ---
-    const [dt, setDt] = useState(1.0);
-    const [timeout, setTimeout_] = useState(6000.0);
-    const [successRange, setSuccessRange] = useState(5.0);
-    const [successVelocity, setSuccessVelocity] = useState(0.05);
-
-    // --- Uncertainty model ---
-    const [posErr, setPosErr] = useState(5);
-    const [velErr, setVelErr] = useState(0.01);
-    const [thrustMagErr, setThrustMagErr] = useState(0.02);
-    const [thrustPtErr, setThrustPtErr] = useState(0.005);
-
-    // --- MC Config --- 
+function MonteCarloPanel({ config, savedResult, onResult, overrides, onOverridesConsumed }) {
+    const lockedAxis = config ? getAxisConstraint(config.glideslope?.approach_axis) : 'y';
+    const [x0, setX0] = useState(config ? getDefaultState(config.glideslope?.approach_axis) : getDefaultState(null));
     const [nSamples, setNSamples] = useState(500);
-    const [seed, setSeed] = useState(42);
-
-    // --- Results ---
+    const [posErr, setPosErr] = useState({ x: 10, y: 10, z: 10 });
+    const [velErr, setVelErr] = useState({ x: 0.01, y: 0.01, z: 0.01 });
     const [loading, setLoading] = useState(false);
-    const [result, setResult] = useState(null);
     const [error, setError] = useState(null);
 
-    const run = async () => {
+    const result = savedResult;
+
+    const run = async (stateOverride) => {
+        const state = stateOverride || x0;
         setLoading(true);
         setError(null);
         try {
-            const data = await runMonteCarlo({
-                initialState: createState(x0.x, x0.y, x0.z, x0.vx, x0.vy, x0.vz),
-                altitude: ISS_ALTITUDE,
+            const data = await runMonteCarlo(
+                { x: state.x, y: state.y, z: state.z, vx: state.vx, vy: state.vy, vz: state.vz },
                 nSamples,
-                seed,
-                corridor: {
-                    axis: { vbar: { x: 0, y: -1, z: 0 }, rbar: { x: -1, y: 0, z: 0}, hbar: { x: 0, y: 0, z: -1 } }[approachAxis],
-                    corridorAngle,
-                    glideslopeK,
-                    minRange,
-                },
-                Q: { pos: qPos, vel: qVel },
-                R,
-                uMax,
-                dt,
-                timeout,
-                successRange,
-                successVelocity,
-                uncertainty: {
-                    posError: createPosition(posErr, posErr, posErr),
-                    velError: createPosition(velErr, velErr, velErr),
-                    thrustMagError: thrustMagErr,
-                    thrustPointingError: thrustPtErr,
-                },
-            });
-            setResult(data);
+                posErr,
+                velErr
+            );
+            if (data.error) throw new Error(data.error);
+            onResult(data);
         } catch (e) {
             setError(e.message);
         } finally {
@@ -121,303 +35,170 @@ function MonteCarloPanel({ overrides, onOverridesConsumed }) {
         }
     };
 
-    // --- Final position scatter plot ---
+    // Handle drill-into from envelope — set state and auto-run
+    useEffect(() => {
+        if (!overrides) return;
+        if (overrides.range) {
+            const axis = config?.glideslope?.approach_axis;
+            let newState = getDefaultState(axis);
+            if (axis && Math.abs(axis[1]) > 0.9) newState.y = -overrides.range;
+            else if (axis && Math.abs(axis[0]) > 0.9) newState.x = -overrides.range;
+            else if (axis && Math.abs(axis[2]) > 0.9) newState.z = -overrides.range;
+            setX0(newState);
+            run(newState);
+        }
+        if (onOverridesConsumed) onOverridesConsumed();
+    }, [overrides, onOverridesConsumed, config]);
+
+    // 3D scatter traces
     const scatterTraces = [];
-    let scatterRanges = {};
-    
-    if (result?.finalStates) {
-        const allVbar = result.finalStates.map(s => s.y);
-        const allRbar = result.finalStates.map(s => s.x);
-        const allHbar = result.finalStates.map(s => s.z);
-        scatterRanges = computeSymmetricRanges({ x: allRbar, y: allVbar, z: allHbar });
 
-        const success = result.finalStates.filter((_, i) =>
-            result.samples[i] && result.samples[i].success
-        );
-        const failed = result.finalStates.filter((_, i) =>
-            result.samples[i] && !result.samples[i].success
-        );
+    if (result?.finalStates && result?.samples) {
+        const successStates = [];
+        const failedStates = [];
 
-        if (success.length > 0) {
+        result.finalStates.forEach((s, i) => {
+            if (result.samples[i]?.success) successStates.push(s);
+            else failedStates.push(s);
+        });
+
+        if (successStates.length > 0) {
             scatterTraces.push({
-                x: success.map(s => s.y), 
-                y: success.map(s => s.x), 
-                z: success.map(s => s.z),
-                mode: 'markers',
-                name: 'success',
-                type: 'scatter3d',
-                marker: { color: COLORS.green, size: 2, opacity: 0.5 },
+                x: successStates.map(s => s.x),
+                y: successStates.map(s => s.y),
+                z: successStates.map(s => s.z),
+                mode: 'markers', type: 'scatter3d',
+                name: 'Success',
+                marker: { color: COLORS.success, size: 2, opacity: 0.5 },
             });
         }
 
-        if (failed.length > 0) {
+        if (failedStates.length > 0) {
             scatterTraces.push({
-                x: failed.map(s => s.y),
-                y: failed.map(s => s.x),
-                z: failed.map(s => s.z),
-                mode: 'markers',
-                name: 'success',
-                type: 'scatter3d',
-                marker: { color: COLORS.red, size: 2, opacity: 0.5 },
+                x: failedStates.map(s => s.x),
+                y: failedStates.map(s => s.y),
+                z: failedStates.map(s => s.z),
+                mode: 'markers', type: 'scatter3d',
+                name: 'Failed',
+                marker: { color: COLORS.failure, size: 2, opacity: 0.5 },
             });
         }
 
-        // Success range
-        const theta = Array.from({ length: 64 }, (_, i) => (i / 63) * 2 * Math.PI);
-        const r = successRange;
-        scatterTraces.push({
-            x: theta.map(t => r * Math.cos(t)),
-            y: theta.map(t => r * Math.sin(t)),
-            z: theta.map(() => 0),
-            mode: 'lines',
-            name: `Success (${r} m)`,
-            type: 'scatter3d',
-            line: { color: COLORS.amber, width: 2, dash: 'dash' },
-        });
-        scatterTraces.push({
-            x: theta.map(t => r * Math.cos(t)),
-            y: theta.map(() => 0),
-            z: theta.map(t => r * Math.sin(t)),
-            mode: 'lines',
-            showlegend: false,
-            type: 'scatter3d',
-            line: { color: COLORS.amber, width: 1, dash: 'dash'},
-        });
-        
         // Target
         scatterTraces.push({
-            x: [0],
-            y: [0],
-            z: [0],
-            mode: 'markers',
+            x: [0], y: [0], z: [0],
+            mode: 'markers', type: 'scatter3d',
             name: 'Target',
-            type: 'scatter3d',
-            marker: { color: COLORS.amber, size: 5, symbol: 'cross' },
+            marker: { color: COLORS.target, size: 5, symbol: 'cross' },
         });
+
+        // Success sphere
+        if (config?.sim?.success_range) {
+            const r = config.sim.success_range;
+            const theta = Array.from({ length: 64 }, (_, i) => (i / 63) * 2 * Math.PI);
+
+            scatterTraces.push({
+                x: theta.map(t => r * Math.cos(t)),
+                y: theta.map(t => r * Math.sin(t)),
+                z: theta.map(() => 0),
+                mode: 'lines', type: 'scatter3d',
+                name: `Success (${r} m)`,
+                line: { color: COLORS.success, width: 1, dash: 'dash' },
+            });
+            scatterTraces.push({
+                x: theta.map(t => r * Math.cos(t)),
+                y: theta.map(() => 0),
+                z: theta.map(t => r * Math.sin(t)),
+                mode: 'lines', type: 'scatter3d',
+                showlegend: false,
+                line: { color: COLORS.success, width: 1, dash: 'dash' },
+            });
+        }
+
+        // Corridor cone from response
+        if (result.corridorCone) {
+            const verts = result.corridorCone.vertices;
+            const faces = result.corridorCone.faces;
+            scatterTraces.push({
+                type: 'mesh3d',
+                x: verts.map(v => v[0]),
+                y: verts.map(v => v[1]),
+                z: verts.map(v => v[2]),
+                i: faces.map(f => f[0]),
+                j: faces.map(f => f[1]),
+                k: faces.map(f => f[2]),
+                opacity: 0.12,
+                color: COLORS.cone,
+                name: 'Corridor',
+                hoverinfo: 'skip',
+            });
+        }
     }
 
-    // dv histogram
-    const dvTraces = [];
-    
-    if (result?.samples) {
-        dvTraces.push({
-            x: result.samples.map(s => s.totalDV),
-            type: 'histogram',
-            name: 'dv Distribution',
-            marker: { color: COLORS.cyan },
-            opacity: 0.75,
-        });
-    }
-
-    // --- Duration histogram ---
-    const durTraces = [];
-
-    if (result?.samples) {
-        durTraces.push({
-            x: result.samples.map(s => s.duration),
-            type: 'histogram',
-            name: 'Duration Distribution',
-            marker: { color: COLORS.magenta },
-            opacity: 0.75,
-        });
-    }
+    // Range for 3D plot
+    const allPoints = result?.finalStates || [];
+    const ranges3D = computeSymmetricRanges(allPoints);
 
     return (
         <div className="panel">
             <div className="panel-header">
                 <h2>Monte Carlo Analysis</h2>
-                <p>Dispersed approach guidance under nav/thruster uncertainties</p>
             </div>
 
             <div className="input-section">
-                <h4>Initial State (LVLH)</h4>
+                <StateInput state={x0} onChange={setX0} lockedAxis={lockedAxis} />
+
+                <div className="input-row">
+                    <div className="input-field">
+                        <span className="field-label">Samples</span>
+                        <input type="number" value={nSamples} min={50} step={100}
+                            onChange={e => setNSamples(parseInt(e.target.value) || 500)} />
+                    </div>
+                </div>
+
+                <label className="input-label">Position Dispersion 1-std [m]</label>
                 <div className="input-row">
                     {['x', 'y', 'z'].map(k => (
-                        <label key={k} className={k === constrainedKey ? 'constrained' : ''}>
-                            {k}{k === constrainedKey ? '≤ 0' : ''}:
-                            <input type="number" value={x0[k]}
-                                onChange={e => handleStateChange(k, e.target.value)}
-                            />
-                            m
-                        </label>
-                    ))}
-                </div>
-                <div className="input-row">
-                    {['vx', 'vy', 'vz'].map(k => (
-                        <label key={k}>
-                            {k}:
-                            <input 
-                                type="number"
-                                value={x0[k]}
-                                step="0.01"
-                                onChange={e => handleStateChange(k, e.target.value)}
-                            />
-                            m/s
-                        </label>
+                        <div key={k} className="input-field">
+                            <span className="field-label">{k}</span>
+                            <input type="number" value={posErr[k]} step={1} min={0}
+                                onChange={e => setPosErr({ ...posErr, [k]: parseFloat(e.target.value) || 0 })} />
+                            <span className="field-unit">m</span>
+                        </div>
                     ))}
                 </div>
 
-                <h4>Approach Corridor</h4>
+                <label className="input-label">Velocity Dispersion 1-std [m/s]</label>
                 <div className="input-row">
-                    <label>
-                        Approach Axis:
-                        <select value={approachAxis} onChange={e => handleAxisChange(e.target.value)}>
-                            <option value="vbar">V-bar (along-track)</option>
-                            <option value="rbar">R-bar (radial)</option>
-                            <option value="hbar">H-bar (cross-track)</option>
-                        </select>
-                    </label>
-                    <label>
-                        Corridor Angle (half):
-                        <input type="number" value={corridorAngle} step="0.01"
-                            onChange={e => setCorridorAngle(parseFloat(e.target.value) || 0.175)}
-                        />
-                        rad
-                    </label>
-                    <label>
-                        Glideslope k:
-                        <input type="number" value={glideslopeK} step="0.0005"
-                            onChange={e => setGlideslopeK(parseFloat(e.target.value) || 0.001)}
-                        />
-                    </label>
-                    <label>
-                        Minimum Range:
-                        <input type="number" value={minRange} step="0.5"
-                            onChange={e => setMinRange(parseFloat(e.target.value) || 10)}
-                        />
-                        m
-                    </label>
+                    {['x', 'y', 'z'].map(k => (
+                        <div key={k} className="input-field">
+                            <span className="field-label">{k}</span>
+                            <input type="number" value={velErr[k]} step={0.001} min={0}
+                                onChange={e => setVelErr({ ...velErr, [k]: parseFloat(e.target.value) || 0 })} />
+                            <span className="field-unit">m/s</span>
+                        </div>
+                    ))}
                 </div>
 
-                <h4>LQR Weights</h4>
-                <div className="input-row">
-                    <label>
-                        Q_pos:
-                        <input type="range" value={qPos} min="1" max="500" step="1"
-                            onChange={e => setQPos(parseFloat(e.target.value))}
-                        />
-                        <span className="value">{qPos}</span>
-                    </label>
-                    <label>
-                        Q_vel:
-                        <input type="range" value={qVel} min="1" max="500" step="1"
-                            onChange={e => setQVel(parseFloat(e.target.value))}
-                        />
-                        <span className="value">{qVel}</span>
-                    </label>
-                    <label>
-                        R:
-                        <input type="range" value={R} min="0.01" max="100" step="0.1"
-                            onChange={e => setR(parseFloat(e.target.value))}
-                        />
-                        <span className="value">{R}</span>
-                    </label>
-                </div>
-                <div className="input-row">
-                    <label>
-                        u_max:
-                        <input type="number" value={uMax} step="0.001"
-                            onChange={e => setUMax(parseFloat(e.target.value) || 0.01)}
-                        />
-                        m/s^2
-                    </label>
-                    <label>
-                        dt:
-                        <input type="number" value={dt} step="0.5" min="0.1"
-                            onChange={e => setDt(parseFloat(e.target.value) || 1.0)}
-                        />
-                        s
-                    </label>
-                    <label>
-                        Timeout:
-                        <input type="number" value={timeout} step="100"
-                            onChange={e => setTimeout_(parseFloat(e.target.value) || 6000.0)}
-                        />
-                        s
-                    </label>
-                </div>
-                <div className="input-row">
-                    <label>
-                        Success Range:
-                        <input type="number" value={successRange} step="0.5"
-                            onChange={e => setSuccessRange(parseFloat(e.target.value) || 5.0)}
-                        />
-                        m
-                    </label>
-                    <label>
-                        Success Velocity:
-                        <input type="number" value={successVelocity} step="0.01"
-                            onChange={e => setSuccessVelocity(parseFloat(e.target.value) || 0.05)}
-                        />
-                        m/s
-                    </label>
-                </div>
-
-                <h4>Uncertainty Model</h4>
-                <div className="input-row">
-                    <label>
-                        Position:
-                        <input type="number" value={posErr} step="0.5" min="0.0"
-                            onChange={e => setPosErr(parseFloat(e.target.value) || 0.0)}
-                        />
-                        m
-                    </label>
-                    <label>
-                        Velocity:
-                        <input type="number" value={velErr} step="0.001" min="0.0"
-                            onChange={e => setVelErr(parseFloat(e.target.value) || 0.0)}
-                        />
-                        m/s
-                    </label>
-                    <label>
-                        Thrust Magnitude:
-                        <input type="number" value={thrustMagErr} step="0.005" min="0.0"
-                            onChange={e => setThrustMagErr(parseFloat(e.target.value) || 0.0)}
-                        />
-                    </label>
-                    <label>
-                        Thrust Pointing:
-                        <input type="number" value={thrustPtErr} step="0.001" min="0.0"
-                            onChange={e => setThrustPtErr(parseFloat(e.target.value) || 0.0)}
-                        />
-                    </label>
-                </div>
-
-                <h4>Monte Carlo Config</h4>
-                <div className="input-row">
-                    <label>
-                        Samples:
-                        <input type="number" value={nSamples} step="100" min="50"
-                            onChange={e => setNSamples(parseInt(e.target.value) || 500)}
-                        />
-                    </label>
-                    <label>
-                        Seed:
-                        <input type="number" value={seed} min="0"
-                            onChange={e => setSeed(parseInt(e.target.value) || 42)}
-                        />
-                    </label>
-                </div>
+                <button className="run-btn" onClick={() => run()} disabled={loading}>
+                    {loading ? 'Running MC...' : 'Run Monte Carlo'}
+                </button>
             </div>
-
-            <button className="run-btn" onClick={run} disabled={loading}>
-                {loading ? 'Running MC...' : 'Run Monte Carlo'}
-            </button>
 
             {error && <div className="error-msg">{error}</div>}
 
             {result && (
-                <>
-                    {/* Key metrics */}
-                    <table className="metrics-table">
+                <div className="results-section">
+                    <table className="results-table">
                         <thead>
                             <tr>
                                 <th>Success Rate</th>
                                 <th>Samples</th>
-                                <th>Mean dv</th>
+                                <th>Mean ΔV</th>
+                                <th>Std ΔV</th>
                                 <th>Mean Duration</th>
-                                <th>Mean Final Range</th>
-                                <th>Mean Saturations</th>
+                                <th>Std Duration</th>
+                                <th>Mean Range</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -426,55 +207,91 @@ function MonteCarloPanel({ overrides, onOverridesConsumed }) {
                                     {(result.successRate * 100).toFixed(1)}%
                                 </td>
                                 <td>{result.nSuccess} / {result.nSamples}</td>
-                                <td>{result.meanDV.toFixed(3)} ± {result.stdDV.toFixed(3)} m/s</td>
-                                <td>{result.meanDuration.toFixed(0)} ± {result.stdDuration.toFixed(0)} s</td>
+                                <td>{result.meanDV.toFixed(4)} m/s</td>
+                                <td>{result.stdDV.toFixed(4)} m/s</td>
+                                <td>{result.meanDuration.toFixed(1)} s</td>
+                                <td>{result.stdDuration.toFixed(1)} s</td>
                                 <td>{result.meanFinalRange.toFixed(2)} m</td>
-                                <td>{result.meanSaturationCount.toFixed(1)}</td>
                             </tr>
                         </tbody>
                     </table>
 
-                    {/* Plots */}
-                    <div className="plot-grid">
-                        <div className="plot-container">
+                    {result.failures && (
+                        <table className="results-table" style={{ marginTop: '8px' }}>
+                            <thead>
+                                <tr>
+                                    <th>Position Timeout</th>
+                                    <th>Excess Velocity</th>
+                                    <th>Limit Cycle</th>
+                                    <th>P95 ΔV</th>
+                                    <th>P99 ΔV</th>
+                                    <th>P95 Duration</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>{result.failures.positionTimeout}</td>
+                                    <td>{result.failures.excessVelocity}</td>
+                                    <td>{result.failures.limitCycle || 0}</td>
+                                    <td>{result.dvPercentiles?.p95?.toFixed(4) || '—'} m/s</td>
+                                    <td>{result.dvPercentiles?.p99?.toFixed(4) || '—'} m/s</td>
+                                    <td>{result.durationPercentiles?.p95?.toFixed(1) || '—'} s</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    )}
+
+                    <div className="plot-container">
+                        <Plot
+                            data={scatterTraces}
+                            layout={layout3D({
+                                title: { text: 'Final Position Dispersion (LVLH)' },
+                                ...ranges3D,
+                            })}
+                            config={PLOTLY_CONFIG}
+                            style={{ width: '100%', height: '500px' }}
+                        />
+                    </div>
+
+                    <div className="plot-row">
+                        <div className="plot-half">
                             <Plot
-                                data={scatterTraces}
-                                layout={dark3DLayout({
-                                    title: { text: 'Final Position Scatter (LVLH)', font: { color: '#c8c8d8' } },
-                                    ...scatterRanges,
-                                })}
-                                config={PLOTLY_CONFIG}
-                                style={{ width: '100%', height: '500px' }}
-                            />
-                        </div>
-                        <div className="plot-container">
-                            <Plot
-                                data={dvTraces}
-                                layout={darkLayout({
-                                    title: { text: 'dv Distribution', font: { color: '#c8c8d8' } },
-                                    xaxis: { title: 'Total dv [m/s' },
+                                data={[{
+                                    x: result.samples?.map(s => s.totalDV) || [],
+                                    type: 'histogram',
+                                    marker: { color: COLORS.trajectory },
+                                    opacity: 0.8,
+                                }]}
+                                layout={layout2D({
+                                    title: { text: 'ΔV Distribution' },
+                                    xaxis: { title: 'Total ΔV [m/s]' },
                                     yaxis: { title: 'Count' },
                                     showlegend: false,
                                 })}
                                 config={PLOTLY_CONFIG}
-                                style={{ width: '100%', height: '350px' }}
+                                style={{ width: '100%', height: '300px' }}
                             />
                         </div>
-                        <div className="plot-container">
+                        <div className="plot-half">
                             <Plot
-                                data={durTraces}
-                                layout={darkLayout({
-                                    title: { text: 'Duration Distribution', font: { color: '#c8c8d8' } },
+                                data={[{
+                                    x: result.samples?.map(s => s.duration) || [],
+                                    type: 'histogram',
+                                    marker: { color: COLORS.amber },
+                                    opacity: 0.8,
+                                }]}
+                                layout={layout2D({
+                                    title: { text: 'Duration Distribution' },
                                     xaxis: { title: 'Duration [s]' },
                                     yaxis: { title: 'Count' },
                                     showlegend: false,
                                 })}
                                 config={PLOTLY_CONFIG}
-                                style={{ width: '100%', height: '350px' }}
+                                style={{ width: '100%', height: '300px' }}
                             />
                         </div>
                     </div>
-                </>
+                </div>
             )}
         </div>
     );
