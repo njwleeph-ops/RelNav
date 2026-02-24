@@ -6,8 +6,6 @@
 #ifndef MONTE_CARLO_HPP
 #define MONTE_CARLO_HPP
 
-#include <random>
-
 #include "gnc_algorithms.hpp"
  
 namespace relnav {
@@ -26,6 +24,7 @@ enum class FailureReason {
 NONE = 0,               // Success - no failure
 POSITION_TIMEOUT,       // Timeout, chaser could never reach target position
 EXCESS_VELOCITY,        // Guidance algorithm unable to clamp velocity effectively
+LIMIT_CYCLE             // Weird artifact I am finding where timeout occurs but chaser made it to target at one point
 };
 
 inline const char* failure_reason_to_string(FailureReason r) {
@@ -36,6 +35,8 @@ inline const char* failure_reason_to_string(FailureReason r) {
             return "position_timeout";
         case FailureReason::EXCESS_VELOCITY:
             return "excess_velocity";
+        case FailureReason::LIMIT_CYCLE:
+            return "limit_cycle";
         default:
             return "N/A";
     }
@@ -71,7 +72,9 @@ struct MonteCarloSampleResult
     double final_velocity;
     double total_dv;
     double duration;
+    double min_range_seen;
     int saturation_count;
+    Vec6 final_state;
 };
 
 /**
@@ -95,7 +98,7 @@ struct FailureBreakdown
 {
     int position_timeout = 0;
     int excess_velocity = 0;
-    int glideslope_trapped = 0;
+    int limit_cycle = 0;
 };
 
 /**
@@ -124,7 +127,6 @@ struct MonteCarloResult
 
     // Raw results
     std::vector<MonteCarloSampleResult> samples;
-    std::vector<Vec6> final_states;
 };
 
 /**
@@ -210,18 +212,6 @@ Vec6 sample_initial_state(
     std::mt19937& rng
 );
 
-/**
- * @brief Apply thrust dispersion to control vector
- * @param u_nominal Nominal thrust control vector
- * @param uncertainty Uncertainty parameters
- * @param rng Random number generator 
- */
-Vec3 disperse_thrust(
-    const Vec3& u_nominal,
-    const UncertaintyModel& uncertainty,
-    std::mt19937& rng
-);
-
 // ----------------------------------------------------------------------------
 // Function Declarations
 // ----------------------------------------------------------------------------
@@ -234,8 +224,7 @@ MonteCarloSampleResult run_sample(
     double n,
     const ApproachParams& params,
     const UncertaintyModel& uncertainty,
-    std::mt19937& rng,
-    Vec6& final_state
+    std::mt19937& rng
 );
 
 /**

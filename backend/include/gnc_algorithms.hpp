@@ -1,17 +1,12 @@
 /**
  * @file gnc_algorithms.hpp
- * @brief GNC Algorithms for Proximity Operations - Declarations
- * 
- * Implements guidance and control algorithms:
-
- * - Glideslope guidance
- * - LQR optimal control
- * 
- * Reference: Fehse, "Automated Rendezvous and Docking of Spacecraft"
+ * @brief GNC Algorithms for RPO's - Declarations
  */
 
 #ifndef GNC_ALGORITHMS_HPP
 #define GNC_ALGORITHMS_HPP
+
+#include <random>
 
 #include "cw_dynamics.hpp"
 
@@ -84,7 +79,12 @@ bool is_inside_corridor(const Vec3& position, const double& corridor_angle, cons
  * @param corridor_angle Half angle of approach corridor [rad]
  * @return Position of intermediate waypoint
  */
-Vec3 compute_edge_waypoint(const Vec3& position, const double& corridor_angle, const Vec3& axis);
+Vec3 compute_edge_waypoint(
+    const Vec3& position, 
+    const double& corridor_angle, 
+    const Vec3& axis,
+    const double& target_range
+);
 
 /**
  * @brief Check if glideslope constraint is violated
@@ -301,19 +301,23 @@ struct ApproachResult {
     double total_dv;
     double final_range;
     double final_velocity;
+    double min_range_seen;
     double duration;
     bool success;
     int saturation_count;
+    int measurement_count;
+    int dropout_count;
 };
 
 ApproachResult run_approach_guidance(
-    const Vec6& x0,
+    const Vec6 &x0,
     double n,
-    const ApproachParams& params,
-    const NavConfig* nav = nullptr,
-    std::mt19937* rng = nullptr
+    const ApproachParams &params,
+    const NavConfig *nav = nullptr,
+    std::mt19937 *filter_rng = nullptr,
+    double thrust_mag_error = 0.0,
+    double thrust_pointing_error = 0.0
 );
-
 }
 
 #endif

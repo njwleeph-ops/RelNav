@@ -44,7 +44,12 @@ bool is_inside_corridor(const Vec3& position, const double& corridor_angle, cons
     return angle < corridor_angle;
 }
 
-Vec3 compute_edge_waypoint(const Vec3& position, const double& corridor_angle, const Vec3& axis) {
+Vec3 compute_edge_waypoint(
+    const Vec3& position, 
+    const double& corridor_angle, 
+    const Vec3& axis,
+    const double& target_range) 
+{
     double angle = glideslope_approach_angle(position, axis);
     
     if (angle < corridor_angle + 0.0001) {
@@ -57,14 +62,24 @@ Vec3 compute_edge_waypoint(const Vec3& position, const double& corridor_angle, c
     Vec3 rot_axis = position.cross(axis);
     double rot_axis_mag = rot_axis.norm();
 
+    if (rot_axis_mag < 1e-10) {
+        return axis * range;
+    }
+
     rot_axis /= rot_axis_mag;
 
     double c = std::cos(rotation_angle);
     double s = std::sin(rotation_angle);
 
-    Vec3 waypoint = position * c + rot_axis.cross(position) * s + rot_axis * (rot_axis.dot(position)) * (1.0 - c);
+    Vec3 waypoint_direction = (
+        position * c
+        + rot_axis.cross(position) * s 
+        + rot_axis * (rot_axis.dot(position)) * (1.0 - c)
+    ).normalized();
 
-    return waypoint;
+    double waypoint_buffer = 1.0;
+
+    return waypoint_direction * target_range * waypoint_buffer;
 }
 
 GlideslopeCheck check_glideslope_violation(const Vec6& x, const GlideslopeParams& params) {
@@ -142,6 +157,7 @@ Vec3 apply_glideslope_constraint (
 
     return u_lateral + u_approach_clamped;
 }
+
 // ----------------------------------------------------------------------------
 // Navigation EKF Filtering
 // ----------------------------------------------------------------------------
@@ -406,51 +422,55 @@ Vec3 saturate_control(const Vec3& u, double u_max) {
 // ----------------------------------------------------------------------------
 // Approach Guidance
 // ----------------------------------------------------------------------------
-
 ApproachResult run_approach_guidance(
-    const Vec6& x0_true,
+    const Vec6 &x0,
     double n,
-    const ApproachParams& params,
-    const NavConfig* nav,
-    std::mt19937* rng)
+    const ApproachParams &params,
+    const NavConfig *nav,
+    std::mt19937 *rng,
+    double thrust_mag_error,
+    double thrust_pointing_error)
 {
     ApproachResult result;
     result.num_points = 0;
     result.total_dv = 0.0;
-    result.success = false;
     result.saturation_count = 0;
     result.trajectory.count = 0;
 
     // Precompute LQR gain
     Mat36 K = compute_lqr_gain(n, params.Q, params.R);
 
-    Vec6 x_true = x0_true;
-    double t = 0.0;
-    bool entered_corridor = false;
+    Vec6 x = x0;
+    Vec6 x_true = x0;
 
-    // Initialize nav filter
+    double t = 0.0;
+    double initial_range = x0.head<3>().norm();
+    double min_range_seen = initial_range;
+
     NavFilterState nav_state;
     double time_since_measurement = 0.0;
     int measurement_count = 0;
     int dropout_count = 0;
 
     if (nav && rng) {
-        nav_state = initialize_filter(x0_true, nav->filter.P0, *rng);
+        nav_state = initialize_filter(x0, nav->filter.P0, *rng);
+        x = nav_state.x_hat;
     }
 
     int max_steps = static_cast<int>(params.timeout / params.dt);
 
-    // Pre-allocate vectors
     result.trajectory.points.resize(max_steps + 1);
     result.control_history.resize(max_steps);
     result.waypoint_history.resize(max_steps);
 
     for (int i = 0; i <= max_steps; ++i) {
         result.trajectory.points[i].t = t;
-        result.trajectory.points[i].x = x_true;
+        result.trajectory.points[i].x = x;
 
-        double range = x_true.head<3>().norm();
-        double velocity = x_true.tail<3>().norm();
+        double range = x.head<3>().norm();
+        double velocity = x.tail<3>().norm();
+
+        min_range_seen = std::min(min_range_seen, range);
 
         if (std::isnan(range) || std::isnan(velocity)) {
             break;
@@ -463,6 +483,9 @@ ApproachResult run_approach_guidance(
             result.final_velocity = velocity;
             result.duration = t;
             result.trajectory.count = result.num_points;
+            result.measurement_count = measurement_count;
+            result.dropout_count = dropout_count;
+            result.min_range_seen = min_range_seen;
             return result;
         }
 
@@ -470,11 +493,9 @@ ApproachResult run_approach_guidance(
             break;
         }
 
-        Vec6 x_control = x_true;
-
         if (nav && rng) {
             double meas_interval = 1.0 / nav->sensor.update_rate;
-            time_since_measruement += params.dt;
+            time_since_measurement += params.dt;
 
             if (time_since_measurement >= meas_interval){
                 Measurement meas = generate_measurement(
@@ -493,42 +514,59 @@ ApproachResult run_approach_guidance(
                 time_since_measurement = 0.0;
             }
 
-            x_for_control = nav_state.x_hat;
+            x = nav_state.x_hat;
         }
 
         bool inside = is_inside_corridor(
-            x_for_control.head<3>(), 
+            x.head<3>(), 
             params.corridor_params.corridor_angle, 
             params.corridor_params.approach_axis
         );
 
-        if (inside) {
-            entered_corridor = true;
-        }
-
-        // Get waypoint based on corridor angle
-        Vec3 waypoint = entered_corridor ? 
+        Vec3 waypoint = inside ? 
         Vec3::Zero() :
         compute_edge_waypoint(
-            x_for_control.head<3>(), 
+            x.head<3>(), 
             params.corridor_params.corridor_angle, 
-            params.corridor_params.approach_axis
+            params.corridor_params.approach_axis,
+            params.success_range
         );
         result.waypoint_history[i] = waypoint;
 
-        // Build reference state for LQR
         Vec6 x_ref = Vec6::Zero();
         x_ref.head<3>() = waypoint;
 
-        // Compute LQR control thrust
-        Vec3 u = compute_lqr_control(x_for_control, K, x_ref);
+        Vec3 u = compute_lqr_control(x, K, x_ref);
 
-        // Apply glideslope constraints
         u = apply_glideslope_constraint(
-            u, x_for_control, params.dt, params.corridor_params
+            u, x, params.dt, params.corridor_params
         );
 
-        // Saturate 
+        if (rng) {
+            std::normal_distribution<double> dist(0.0, 1.0);
+
+            double mag_scale = 1.0 + thrust_mag_error * dist(*rng);
+
+            double angle1 = thrust_pointing_error * dist(*rng);
+            double angle2 = thrust_pointing_error * dist(*rng);
+
+            Vec3 u_dir = u.normalized();
+
+            Vec3 perp1 = u_dir.cross(Vec3::UnitX());
+
+            if (perp1.norm() < 1e-16) {
+                perp1 = u_dir.cross(Vec3::UnitZ());
+            }
+
+            perp1.normalize();
+            Vec3 perp2 = u_dir.cross(perp1).normalized();
+
+            Vec3 u_rotated = u_dir + angle1 * perp1 + angle2 * perp2;
+            u_rotated.normalized();
+
+            u = mag_scale * u.norm() * u_rotated;
+        }
+
         Vec3 u_saturated = saturate_control(u, params.u_max);
 
         if ((u_saturated - u).norm() > 1e-10) {
@@ -539,20 +577,37 @@ ApproachResult run_approach_guidance(
 
         result.control_history[i] = u;
 
-        // Accumulate delta-v
         result.total_dv += u.norm() * params.dt;
 
-        // RK4 step
-        x = rk4_step(x, t, params.dt, n , u);
-        t += params.dt;
+       if (nav && rng) {
+        x_true = rk4_step(x_true, t, params.dt, n, u);
+        nav_state = ekf_predict(nav_state, u, n, params.dt, nav->filter.Q_process);
+        x = nav_state.x_hat;
+       } else {
+        x = rk4_step(x, t, params.dt, n, u);
+       }
+
+       t += params.dt;
     }
 
-    // Timeout
     result.num_points = max_steps + 1;
     result.final_range = x.head<3>().norm();
     result.final_velocity = x.tail<3>().norm();
     result.duration = t;
     result.trajectory.count = result.num_points;
+    result.measurement_count = measurement_count;
+    result.dropout_count = dropout_count;
+    result.min_range_seen = min_range_seen;
+    
+    if (result.min_range_seen <= params.success_range && result.final_velocity >= params.success_velocity) {
+        result.success = false;
+    } else if (result.min_range_seen >= params.success_range) {
+        result.success = false;
+    } else if (result.final_range >= params.success_range) {
+        result.success = false;
+    } else {
+        result.success = true;
+    }
 
     return result;
 }

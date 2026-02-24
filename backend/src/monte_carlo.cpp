@@ -36,159 +36,48 @@ Vec6 sample_initial_state(
     return x0;
 }
 
-Vec3 disperse_thrust(
-    const Vec3& u_nominal,
-    const UncertaintyModel& uncertainty,
-    std::mt19937& rng)
-{
-    if (u_nominal.norm() < 1e-12) {
-        return u_nominal;
-    }
-
-    std::normal_distribution<double> dist(0.0, 1.0);
-
-    // Magnitude error
-    double mag_scale = 1.0 + uncertainty.thrust_mag_error * dist(rng);
-
-    // Pointing Error - rotate around perpendicular axes
-    double angle1 = uncertainty.thrust_pointing_error * dist(rng);
-    double angle2 = uncertainty.thrust_pointing_error * dist(rng);
-
-    Vec3 u_dir = u_nominal.normalized();
-
-    // Find perpendicular axis directional vectors
-    Vec3 perp1 = u_dir.cross(Vec3::UnitX());
-
-    if (perp1.norm() < 1e-16) {
-        perp1 = u_dir.cross(Vec3::UnitZ());
-    }
-
-    perp1.normalize();
-    Vec3 perp2 = u_dir.cross(perp1).normalized();
-
-    // Apply small rotations
-    Vec3 u_rotated = u_dir + angle1 * perp1 + angle2 * perp2;
-    u_rotated.normalized();
-
-    return mag_scale * u_nominal.norm() * u_rotated;
-}
-
 // ----------------------------------------------------------------------------
 // Single Sample Execution
 // ----------------------------------------------------------------------------
 
 MonteCarloSampleResult run_sample(
-    const Vec6& x0,
+    const Vec6 &x0,
     double n,
-    const ApproachParams& params,
-    const UncertaintyModel& uncertainty,
-    std::mt19937& rng,
-    Vec6& final_state)
+    const ApproachParams &params,
+    const UncertaintyModel &uncertainty,
+    std::mt19937 &rng)
 {
     MonteCarloSampleResult result;
-    result.total_dv = 0.0;
-    result.success = false;
-    result.saturation_count = 0;
-    
 
-    Mat36 K = compute_lqr_gain(n, params.Q, params.R);
+    NavConfig nav = default_nav_config();
 
-    Vec6 x = x0;
-    double t = 0.0;
-    bool entered_corridor = false;
+    ApproachResult approach_result = run_approach_guidance(
+        x0,
+        n,
+        params,
+        &nav,
+        &rng,
+        uncertainty.thrust_mag_error,
+        uncertainty.thrust_pointing_error);
 
-    int max_steps = static_cast<int>(params.timeout / params.dt);
+    result.success = approach_result.success;
+    result.final_range = approach_result.final_range;
+    result.final_velocity = approach_result.final_velocity;
+    result.total_dv = approach_result.total_dv;
+    result.duration = approach_result.duration;
+    result.saturation_count = approach_result.saturation_count;
+    result.min_range_seen = approach_result.min_range_seen;
+    result.final_state = approach_result.trajectory.points[approach_result.num_points - 1].x;
+    // TODO maybe add dropout_count and measurement_count idk lol
 
-    double initial_range = x0.head<3>().norm();
-
-    // Track whether reached success_range
-    double min_range_seen = initial_range;
-
-    for (int i = 0; i <= max_steps; ++i) {
-        double range = x.head<3>().norm();
-        double velocity = x.tail<3>().norm();
-
-        min_range_seen = std::min(min_range_seen, range);
-
-        if (std::isnan(range) || std::isnan(velocity)) {
-            std::cout << "NaN detected at i = " << i << std::endl;
-            std::cout << "x = " << x.transpose() << std::endl;
-            break;
-        }
-
-        if (range < params.success_range && velocity < params.success_velocity) {
-            result.success = true;
-            result.failure_reason = FailureReason::NONE;
-            result.final_range = range;
-            result.final_velocity = velocity;
-            result.duration = t;
-            final_state = x;
-            return result;
-        }
-
-        if (i == max_steps) {
-            break;
-        }
-
-        bool inside = is_inside_corridor(
-            x.head<3>(),
-            params.corridor_params.corridor_angle,
-            params.corridor_params.approach_axis
-        );
-
-        if (inside) {
-            entered_corridor = true;
-        }
-
-        Vec3 waypoint = entered_corridor ?
-            Vec3::Zero() :
-            compute_edge_waypoint(
-                x.head<3>(),
-                params.corridor_params.corridor_angle,
-                params.corridor_params.approach_axis
-            );
-        
-        Vec6 x_ref = Vec6::Zero();
-        x_ref.head<3>() = waypoint;
-
-        // LQR control
-        Vec3 u = compute_lqr_control(x, K, x_ref);
-
-        // Glideslope Constraint
-        u = apply_glideslope_constraint(u, x, params.dt, params.corridor_params);
-
-        // Saturate
-        Vec3 u_sat = saturate_control(u, params.u_max);
-
-        if ((u_sat - u).norm() > 1e-10) {
-            result.saturation_count++;
-        }
-
-        u = u_sat;
-
-        // Apply thrust dispersion
-        Vec3 u_dispersed = disperse_thrust(u, uncertainty, rng);
-
-        // Accumulate delta-v
-        result.total_dv += u_dispersed.norm() * params.dt;
-
-        // RK4 step
-        x = rk4_step(x, t, params.dt, n, u_dispersed);
-        t += params.dt;
-    }
-
-    // Timeout
-    result.final_range = x.head<3>().norm();
-    result.final_velocity = x.tail<3>().norm();
-    result.duration = t;
-    final_state = x;
-
-    //std::cout << "min_range_seen = " << min_range_seen << " | success_range = " << params.success_range << std::endl;
-
-    if (min_range_seen < params.success_range && result.final_velocity > params.success_velocity) {
+    if (result.final_range <= params.success_range && result.final_velocity >= params.success_velocity) {
         result.failure_reason = FailureReason::EXCESS_VELOCITY;
-    } else {
+    } else if (result.min_range_seen > params.success_range) {
         result.failure_reason = FailureReason::POSITION_TIMEOUT;
+    } else if (result.final_range > params.success_range) {
+        result.failure_reason = FailureReason::LIMIT_CYCLE;
+    } else {
+        result.failure_reason = FailureReason::NONE;
     }
 
     return result;
@@ -252,6 +141,8 @@ void compute_statistics(MonteCarloResult& result) {
                 case FailureReason::EXCESS_VELOCITY:
                     result.failures.excess_velocity++;
                     break;
+                case FailureReason::LIMIT_CYCLE:
+                    result.failures.limit_cycle++;
                 default:
                     break;
             }
@@ -321,7 +212,6 @@ MonteCarloResult run_monte_carlo(
     MonteCarloResult result;
     result.n_samples = std::min(n_samples, MAX_MC_SAMPLES);
     result.samples.resize(result.n_samples);
-    result.final_states.resize(result.n_samples);
 
     // Auto-detect thread count
     if (n_threads <= 0) {
@@ -358,16 +248,14 @@ MonteCarloResult run_monte_carlo(
             Vec6 x0 = sample_initial_state(x0_nominal, uncertainty, rng);
 
             // Run closed-loop guidance
-            Vec6 final_state;
             MonteCarloSampleResult sample = run_sample(
-                x0, n, params, uncertainty, rng, final_state
+                x0, n, params, uncertainty, rng
             );
 
             // Store result
             {
                 std::lock_guard<std::mutex> lock(result_mutex);
                 result.samples[sample_idx] = sample;
-                result.final_states[sample_idx] = final_state;
             }
         }
     };
@@ -405,6 +293,9 @@ FailureReason dominant_failure_reason(const FailureBreakdown& failures) {
     if (failures.excess_velocity > max_count) {
         max_count = failures.excess_velocity;
         dominant = FailureReason::EXCESS_VELOCITY;
+    } else if (failures.limit_cycle > max_count) {
+        max_count = failures.limit_cycle;
+        dominant = FailureReason::LIMIT_CYCLE;
     }
 
     return dominant;
