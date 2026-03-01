@@ -562,7 +562,7 @@ ApproachResult run_approach_guidance(
             Vec3 perp2 = u_dir.cross(perp1).normalized();
 
             Vec3 u_rotated = u_dir + angle1 * perp1 + angle2 * perp2;
-            u_rotated.normalized();
+            u_rotated.normalize();
 
             u = mag_scale * u.norm() * u_rotated;
         }

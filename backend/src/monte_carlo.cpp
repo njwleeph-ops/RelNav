@@ -323,7 +323,7 @@ EnvelopePoint run_envelope_point(
     new_params.u_max = u_max;
     Vec6 x0 = state_from_range(range, new_params);
 
-    MonteCarloResult mc = run_monte_carlo(x0, n, params, uncertainty, n_samples, 1, seed);
+    MonteCarloResult mc = run_monte_carlo(x0, n, new_params, uncertainty, n_samples, 1, seed);
 
     // Condense into EnvelopePoint
     EnvelopePoint pt;

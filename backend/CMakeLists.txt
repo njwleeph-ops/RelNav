@@ -10,77 +10,69 @@ find_package(Threads REQUIRED)
 find_package(GTest REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
+add_library(relnav_core
+    src/cw_dynamics.cpp
+    src/gnc_algorithms.cpp
+    src/monte_carlo.cpp
+)
 
-include_directories(
+target_include_directories(relnav_core PUBLIC
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/include/cpp-httplib
     ${CMAKE_SOURCE_DIR}/include/json/include
-    ${GTEST_INCLUDE_DIRS}
 )
+
+target_link_libraries(relnav_core PUBLIC
+    Eigen3::Eigen
+    Threads::Threads
+)
+
 
 add_executable(server
     src/main.cpp
-    src/cw_dynamics.cpp
-    src/monte_carlo.cpp
-    src/gnc_algorithms.cpp
     src/config.cpp
 )
 
-add_executable(guidance_testing 
-    src/tests/guidance_tests.cpp
-    src/gnc_algorithms.cpp
-    src/cw_dynamics.cpp
-)
-
-add_executable(monte_carlo_testing
-    src/tests/monte_carlo_tests.cpp
-    src/monte_carlo.cpp
-    src/gnc_algorithms.cpp
-    src/cw_dynamics.cpp
-)
-
-add_executable(nav_testing
-    src/tests/navigation_tests.cpp
-    src/gnc_algorithms.cpp
-    src/cw_dynamics.cpp
-)
-
-target_include_directories(server PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-)
-
 target_link_libraries(server PRIVATE
-    Threads::Threads
-    Eigen3::Eigen
+    relnav_core
     yaml-cpp::yaml-cpp
 )
 
-target_include_directories(guidance_testing PRIVATE 
-    ${CMAKE_SOURCE_DIR}/include
+function(add_test_executable name source) 
+    add_executable(${name} ${source} ${ARGN})
+    target_link_libraries(${name} PRIVATE
+        relnav_core
+        GTest::gtest
+        GTest::gtest_main
+    )
+endfunction()
+
+add_test_executable(guidance_testing
+    src/tests/unit_tests/guidance_tests.cpp
 )
 
-target_include_directories(monte_carlo_testing PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
+add_test_executable(monte_carlo_testing
+    src/tests/unit_tests/monte_carlo_tests.cpp
 )
 
-target_include_directories(nav_testing PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
+add_test_executable(nav_testing
+    src/tests/unit_tests/navigation_tests.cpp
 )
 
-target_link_libraries(guidance_testing PRIVATE 
-    GTest::gtest
-    GTest::gtest_main
-    Eigen3::Eigen
+add_test_executable(controller_validation_test
+    src/tests/validation/controller_validation.cpp
+    src/tests/unit_tests/controller_validation_tests.cpp
 )
 
-target_link_libraries(monte_carlo_testing PRIVATE
-    GTest::gtest
-    GTest::gtest_main
-    Eigen3::Eigen
+add_executable(controller_validation
+    src/tests/validation/controller_validation.cpp
+    src/tests/validation/controller_validation_main.cpp
 )
 
-target_link_libraries(nav_testing PRIVATE
-    GTest::gtest
-    GTest::gtest_main
-    Eigen3::Eigen
+target_link_libraries(controller_validation PRIVATE
+    relnav_core
+)
+
+target_include_directories(controller_validation PRIVATE
+    src/tests/validation
 )
