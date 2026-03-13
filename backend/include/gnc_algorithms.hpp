@@ -19,7 +19,7 @@ namespace relnav {
 constexpr int MAX_WAYPOINTS = 20;
 
 // ----------------------------------------------------------------------------
-// Glideslope Guidance
+// Guidance
 // ----------------------------------------------------------------------------
 
 /// Guidance structs
@@ -46,7 +46,137 @@ struct GlideslopeCheck {
     double approach_angle;  // Angle of approach [rad]
 };
 
+enum class GuidancePhase{
+    CORRIDOR_ENTRY,
+    CORRIDOR_TRAVERSE,
+    TERMINAL,
+    COMPLETE,
+    ABORT
+};
+
+struct GuidanceConfig : GlideslopeParams{
+    double terminal_range = 30.0;
+    double success_range = 5.0;
+    double success_velocity = 0.05;
+    double timeout = 6000.0;
+    double waypoint_advance_radius = 25.0;
+
+    double waypoint_angular_spacing = 10.0 * M_PI / 180.0;
+    int min_waypoints = 2;
+
+    double entry_range_fraction = 0.7;
+    double terminal_k = 0.005;
+    double n = OrbitalParams(420e3).mean_motion();
+};
+
+struct GuidanceState{
+    GuidancePhase phase;
+    std::vector<Vec6> waypoints;
+    int current_waypoint_idx;
+    double elapsed_time = 0.0;
+};
+
+struct GuidanceOutput{
+    Vec6 x_reference;
+    GuidancePhase phase;
+    bool glideslope_active;
+    bool corridor_active;
+    int waypoint_idx;
+    int total_waypoints;
+};
+
 /// Guidance function declarations
+
+/**
+ * @brief Rodrigues rotation
+ */
+Vec3 rodrigues_rotate(const Vec3 &v, const Vec3 &k, double theta);
+
+/**
+ * @brief Find perpendicular vector
+ */
+Vec3 find_perpendicular(const Vec3 &v);
+
+/**
+ * @brief Compute rotation axis for arcing from position toward approach axis
+ */
+Vec3 compute_rotation_axis(const Vec3 &position, const Vec3 &approach_axis);
+
+/**
+ * @brief Compute angular distance from position to corridor edge
+ */
+double compute_angle_to_corridor(
+    const Vec3 &position,
+    const GlideslopeParams& params
+);
+
+/**
+ * @brief Pick corridor entry point given chaser current position
+ */
+Vec3 compute_corridor_entry_point(
+    const Vec3 &position,
+    const GuidanceConfig &config
+);
+
+/**
+ * @brief Generate waypoints along natural CW transfer
+ */
+std::vector<Vec6> generate_cw_transfer_arc(
+    const Vec3 &position,
+    const GuidanceConfig &config,
+    double n
+);
+
+/**
+ * @brief Generate entry arc waypoints
+ */
+std::vector<Vec6> generate_entry_arc(
+    const Vec3 &position,
+    const GuidanceConfig &config
+);
+
+/**
+ * @brief Determine which guidance phase 
+ */
+void determine_phase(
+    const Vec6 &x,
+    GuidanceState &state,
+    const GuidanceConfig &config,
+    double n
+);
+
+/**
+ * @brief Chekc if chaser should advance to next waypoint
+ */
+bool try_advance_waypoint(
+    const Vec3 &position,
+    GuidanceState &state,
+    const GuidanceConfig &config
+);
+
+/**
+ * @brief Initialize guidance state
+ */
+GuidanceState initialize_guidance(
+    const Vec3 &position,
+    const GuidanceConfig &config,
+    double n
+);
+
+/**
+ * @brief Main guidance tick
+ * @param x Current state estimate
+ * @param state Mutable guidance state
+ * @param config Guidance config
+ * @param dt Timestep
+ * @return Guidance output with reference state and updated mode flag
+ */
+GuidanceOutput update_guidance(
+    const Vec6 &x,
+    GuidanceState &state,
+    const GuidanceConfig &config,
+    double dt
+);
 
 /**
  * @brief Compute maximum allowed approach velocity
@@ -100,7 +230,13 @@ GlideslopeCheck check_glideslope_violation(const Vec6& x, const GlideslopeParams
  * @param x State vector
  * @param params Glideslope parameters
  */
-Vec3 apply_glideslope_constraint(const Vec3& u, const Vec6& x, double dt, const GlideslopeParams& params);
+Vec3 apply_glideslope_constraint(
+    const Vec3& u, 
+    const Vec6& x, 
+    double dt, 
+    const GlideslopeParams& params,
+    const Vec3 *x_reference = nullptr
+);
 
 // ----------------------------------------------------------------------------
 // Navigation EKF Filtering
@@ -288,6 +424,8 @@ struct ApproachParams {
     double timeout = 6000.0;
     double success_range = 5.0;
     double success_velocity = 0.05;
+    bool use_phased_guidance = false;
+    GuidanceConfig guidance_config;
 };
 
 /**
@@ -296,7 +434,7 @@ struct ApproachParams {
 struct ApproachResult {
     Trajectory trajectory;
     std::vector<Vec3> control_history;
-    std::vector<Vec3> waypoint_history;
+    std::vector<Vec6> waypoint_history;
     int num_points;
     double total_dv;
     double final_range;
@@ -307,12 +445,13 @@ struct ApproachResult {
     int saturation_count;
     int measurement_count;
     int dropout_count;
+    std::vector<GuidancePhase> phase_history;
 };
 
 ApproachResult run_approach_guidance(
     const Vec6 &x0,
     double n,
-    const ApproachParams &params,
+    const ApproachParams &base_params,
     const NavConfig *nav = nullptr,
     std::mt19937 *filter_rng = nullptr,
     double thrust_mag_error = 0.0,

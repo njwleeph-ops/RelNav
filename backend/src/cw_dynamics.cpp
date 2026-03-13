@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <iostream>
 
 #include "cw_dynamics.hpp"
 
@@ -97,6 +98,28 @@ Mat6 cw_state_transition_matrix(double n, double t) {
     return Phi;
 }
 
+Vec3 solve_cw_tpbvp(
+    const Vec3 &r0,
+    const Vec3 &rf,
+    double T,
+    double n)
+{
+    Mat6 Phi = cw_state_transition_matrix(n, T);
+
+    Mat3 Phi_rr = Phi.block<3, 3>(0, 0);
+    Mat3 Phi_rv = Phi.block<3, 3>(0, 3);
+
+    double det = Phi_rv.determinant();
+
+    if (std::abs(det) < 1e-12) {
+        return Vec3::Zero();
+    }
+
+    Vec3 v0 = Phi_rv.inverse() * (rf - Phi_rr * r0);\
+
+    return v0;
+}
+
 // ----------------------------------------------------------------------------
 // Propagation
 // ----------------------------------------------------------------------------
@@ -142,6 +165,15 @@ Vec6 rk4_step(
     return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
 }
 
+Vec6 cw_propagate(
+    const Vec6 &x0,
+    double dt,
+    double n)
+{
+    Mat6 Phi = cw_state_transition_matrix(n, dt);
+
+    return Phi * x0;
+}
 
 // ----------------------------------------------------------------------------
 // Validation

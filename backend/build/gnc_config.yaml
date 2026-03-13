@@ -6,16 +6,16 @@ orbit:
   altitude: 420000.0    # [m]
 
 lqr:
-  Q_pos_along: 1.0            # Q -> State Penalty
-  Q_pos_cross: 1.0
-  Q_vel: 70.25
+  Q_pos_along: 100.0            # Q -> State Penalty
+  Q_pos_cross: 100.0
+  Q_vel: 100.0
   R: 1.0                # R -> Control Penalty (thrust)
 
 glideslope:
   k: 0.001
-  corridor_angle: 0.0175  # [rad] Half angle
+  corridor_angle: 0.175  # [rad] Half angle
   min_range: 5.0          # [m]
-  approach_axis: [0, 0, -1]  # V-bar
+  approach_axis: [0, -1, 0]  # V-bar
 
 nav_filter:
   sensor:
@@ -24,12 +24,12 @@ nav_filter:
     update_rate: 1.0      # [Hz]
     max_range: 2000.0     # [m]
     min_range: 2.0        # [m]
-  Q_process_pos: 0.001
-  Q_process_vel: 0.0001
-  R_meas_range: 1.0
-  R_meas_bearing: 0.000025
+  Q_process_pos: 0.000000000088596
+  Q_process_vel: 0.0000000000088596
+  R_meas_range: 0.615849386
+  R_meas_bearing: 0.000015396
   P0_pos: 100.0         # P0 -> Initial covariance matrix
-  P0_el: 0.01
+  P0_vel: 0.01
 
 control:
   u_max: 0.01

@@ -110,12 +110,39 @@ Mat63 cw_control_matrix();
  */
 Mat6 cw_state_transition_matrix(double n, double t);
 
+/**
+ * @brief Propagate a state vector forward a timestep dt using STM
+ * @param x0 Initial state vector
+ * @param dt Timestep
+ * @param n Mean motion
+ */
+Vec6 cw_propagate(
+    const Vec6 &x0,
+    double dt,
+    double n
+);
+
+/**
+ * @brief Solve two-point boundary value problem for CW
+ * @param r0 Initial position
+ * @param rf Final position
+ * @param T Time for solution to undergo
+ * @param n Mean motion
+ * @return v0
+ */
+Vec3 solve_cw_tpbvp(
+    const Vec3 &r0,
+    const Vec3 &rf,
+    double T,
+    double n);
+
+
 // ----------------------------------------------------------------------------
 // Propagation
 // ----------------------------------------------------------------------------
 
 /**
- * @brief Propagate state analytically using state transition matrix
+* @brief Propagate state analytically using state transition matrix
  * @param x0 Initial state [x, y, z, v_x, v_y, v_z]
  * @param duration Propagation duration [s]
  * @param n Mean motion [rad/s]
@@ -124,10 +151,10 @@ Mat6 cw_state_transition_matrix(double n, double t);
  * @return State history as vector of (time, state) pairs
  */
 void propagate_analytical(
-    const Vec6& x0,
+    const Vec6 &x0,
     double duration,
     double n,
-    Trajectory& out,
+    Trajectory &out,
     int num_points = 100
 );
 
